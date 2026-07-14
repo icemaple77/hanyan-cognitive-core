@@ -14,4 +14,5 @@ __all__ = [
     "MemorySearch",
     "MemoryResponse",
     "MemoryListResponse",
+    "SemanticSearchRequest",
 ]

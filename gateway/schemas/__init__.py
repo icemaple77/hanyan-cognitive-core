@@ -52,3 +52,9 @@ class MemoryResponse(BaseModel):
 class MemoryListResponse(BaseModel):
     items: list[MemoryResponse]
     total: int
+
+
+class SemanticSearchRequest(BaseModel):
+    embedding: list[float] = Field(..., description="Vector embedding to search by")
+    limit: int = Field(default=10, ge=1, le=100)
+    user_id: str | None = None

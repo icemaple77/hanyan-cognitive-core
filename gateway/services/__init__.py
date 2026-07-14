@@ -62,6 +62,32 @@ class MemoryService:
         result = await self.session.execute(delete(Memory).where(Memory.id == memory_id))
         return result.rowcount > 0
 
+    async def semantic_search(
+        self,
+        embedding: list[float],
+        limit: int = 10,
+        user_id: Optional[str] = None,
+        type: Optional[str] = None,
+    ) -> list[tuple[Memory, float]]:
+        """Return the ``limit`` memories most similar to ``embedding``.
+
+        Similarity is measured with pgvector's cosine distance (0.0 == identical
+        direction, 2.0 == opposite). Results are ordered nearest-first and each
+        is returned alongside its raw cosine distance so callers can derive a
+        similarity score. Memories without a stored embedding are excluded.
+        """
+        distance = Memory.embedding.cosine_distance(embedding).label("distance")
+
+        stmt = select(Memory, distance).where(Memory.embedding.is_not(None))
+        if user_id:
+            stmt = stmt.where(Memory.user_id == user_id)
+        if type:
+            stmt = stmt.where(Memory.type == type)
+        stmt = stmt.order_by(distance).limit(limit)
+
+        result = await self.session.execute(stmt)
+        return [(memory, float(dist)) for memory, dist in result.all()]
+
     async def get_recent(self, limit: int = 20, offset: int = 0) -> tuple[list[Memory], int]:
         stmt = select(Memory).order_by(Memory.created_at.desc()).offset(offset).limit(limit)
         count_stmt = select(func.count(Memory.id))

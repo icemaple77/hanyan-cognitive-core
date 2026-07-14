@@ -10,6 +10,7 @@ from gateway.schemas.memory import (
     MemoryResponse,
     MemorySearch,
     MemoryListResponse,
+    SemanticSearchRequest,
 )
 from gateway.services.memory_service import MemoryService
 
@@ -74,4 +75,21 @@ async def recent_memories(
     return MemoryListResponse(
         items=[MemoryResponse.model_validate(m) for m in memories],
         total=total,
+    )
+
+
+@router.post("/memory/semantic-search", response_model=MemoryListResponse)
+async def semantic_search_memories(
+    query: SemanticSearchRequest,
+    session: AsyncSession = Depends(get_session),
+) -> MemoryListResponse:
+    service = MemoryService(session)
+    results = await service.semantic_search(
+        embedding=query.embedding,
+        limit=query.limit,
+        user_id=query.user_id,
+    )
+    return MemoryListResponse(
+        items=[MemoryResponse.model_validate(m) for m, _ in results],
+        total=len(results),
     )
