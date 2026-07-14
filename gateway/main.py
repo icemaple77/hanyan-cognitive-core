@@ -4,6 +4,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from gateway.api import health, memory_routes
 from gateway.core.database import engine, Base
@@ -13,6 +14,7 @@ from gateway.core.database import engine, Base
 async def lifespan(app: FastAPI):
     # Startup
     async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
     yield
     # Shutdown

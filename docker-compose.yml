@@ -19,9 +19,10 @@ services:
       POSTGRES_PASSWORD: hcc
       POSTGRES_DB: hcc
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hcc"]
       interval: 5s

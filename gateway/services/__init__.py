@@ -6,7 +6,7 @@ from typing import Optional
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.models.memory import Memory
+from gateway.models import Memory
 from gateway.schemas.memory import MemoryCreate, MemoryUpdate, MemorySearch
 
 

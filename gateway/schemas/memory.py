@@ -6,6 +6,7 @@ from gateway.schemas.__init__ import (
     MemorySearch,
     MemoryResponse,
     MemoryListResponse,
+    SemanticSearchRequest,
 )
 
 __all__ = [

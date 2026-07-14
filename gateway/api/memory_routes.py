@@ -12,7 +12,7 @@ from gateway.schemas.memory import (
     MemoryListResponse,
     SemanticSearchRequest,
 )
-from gateway.services.memory_service import MemoryService
+from gateway.services import MemoryService
 
 router = APIRouter()
 
