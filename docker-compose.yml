@@ -1,0 +1,32 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - HCC_DATABASE_URL=postgresql+asyncpg://hcc:hcc@db:5432/hcc
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./gateway:/app/gateway
+    command: uvicorn gateway.main:app --host 0.0.0.0 --port 8000 --reload
+
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: hcc
+      POSTGRES_PASSWORD: hcc
+      POSTGRES_DB: hcc
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hcc"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

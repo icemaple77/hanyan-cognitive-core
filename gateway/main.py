@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Hanyan Cognitive Core — Memory Gateway API"""
+
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from gateway.api import health, memory_routes
+from gateway.core.database import engine, Base
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    # Shutdown
+    await engine.dispose()
+
+
+app = FastAPI(
+    title="Hanyan Cognitive Core",
+    description="Memory Operating System for AI Agents",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Routes
+app.include_router(health.router, prefix="/api/v1", tags=["health"])
+app.include_router(memory_routes.router, prefix="/api/v1", tags=["memory"])
