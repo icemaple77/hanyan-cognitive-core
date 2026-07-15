@@ -14,6 +14,7 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "python-dotenv>=1.0.0",
     "uuid6>=2024.7.10",
+    "mcp>=1.2.0",
 ]
 
 [project.optional-dependencies]
@@ -26,3 +27,9 @@ dev = [
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Only ship the gateway package. The local ``mcp/`` directory is intentionally
+# NOT declared as a package: it would collide with the third-party ``mcp`` PyPI
+# distribution in site-packages. It is imported at runtime via the project root.
+packages = ["gateway", "gateway.core", "gateway.api", "gateway.models", "gateway.schemas", "gateway.services"]
