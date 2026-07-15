@@ -1,4 +1,4 @@
-.PHONY: dev db redis test clean scan qmd-generate
+.PHONY: dev db redis test clean scan qmd-generate context
 
 dev:
 	uv run uvicorn gateway.main:app --reload --host 0.0.0.0 --port 8000
@@ -12,17 +12,8 @@ db-stop:
 redis:
 	docker compose up -d redis
 
-redis-stop:
-	docker compose stop redis
-
 test:
 	uv run pytest
-
-scan:
-	uv run python -m scanner.watcher
-
-qmd-generate:
-	uv run python -m core.qmd_generator
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
@@ -33,3 +24,12 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+scan:
+	uv run python -m scanner.watcher
+
+qmd-generate:
+	uv run python -m core.qmd_generator
+
+context:
+	uv run python -c "from gateway.api.context_routes import router; print('Context API route ready: POST /api/v1/context')"

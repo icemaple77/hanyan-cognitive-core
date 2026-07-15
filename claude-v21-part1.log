@@ -1,0 +1,52 @@
+HCC v2.1 Part 1 is complete. Here's a summary of what I built.
+
+## Delivered files
+
+All 8 files created exactly as specified (no existing files modified):
+
+| File | Purpose |
+|------|---------|
+| `core/providers/__init__.py` | empty package marker |
+| `core/providers/base.py` | Provider SDK — ABC + 7 dataclasses |
+| `core/providers/memory.py` | `MemoryProvider` (PostgreSQL) |
+| `core/providers/knowledge_qmd.py` | `KnowledgeQMDProvider` (QMD markdown) |
+| `core/managers/__init__.py` | empty package marker |
+| `core/managers/memory_manager.py` | `MemoryManager` + `ManagerSettings` |
+| `core/managers/knowledge_manager.py` | `KnowledgeManager` |
+| `core/managers/context_builder.py` | `ContextBuilder` |
+
+## Key design points
+
+- **Provider SDK** (`base.py`): abstract `Provider(ABC)` with `search/store/update/delete/health/metadata`, plus the exact dataclasses requested (`SearchQuery`, `SearchResult`, `StoreData`, `StoreResult`, `UpdateData`, `HealthStatus`, `ProviderMetadata`). `update` returns `StoreResult` (no `UpdateResult` was in the dataclass list).
+- **MemoryProvider**: wraps `gateway.core.database.async_session` + `gateway.models.Memory`; `async with` session scope with commit/rollback; keyword+JSON-tag `ILIKE` search ordered `created_at DESC`; `store` computes embeddings via `embed_text`; `delete` is a soft delete (`status=archived`). Config: `HCC_MEMORY_PROVIDER`.
+- **KnowledgeQMDProvider**: reads/writes `<HCC_QMD_DIR>/Knowledge/<Category>/<slug>.md` with atomic temp-file writes and a path-traversal guard. Config: `HCC_KNOWLEDGE_PROVIDER`, `HCC_QMD_DIR`.
+- **Managers**: lazy `EventBus` (best-effort `MEMORY_UPDATED` / `KNOWLEDGE_MERGED`, gated by `HCC_EVENTS_ENABLED`, never crash on Redis failure). `get_context` re-ranks recent memories by importance.
+- **ContextBuilder.build** returns `{context, sources:[{provider,type,items}], provider_metadata, emotion_state}` with pluggable (optional) emotion provider.
+- **Config**: all via Pydantic `BaseSettings`, `env_prefix="HCC_"`, `extra="ignore"`.
+
+## Verification
+
+- `py_compile` + full import smoke: all pass, no regressions.
+- QMD provider: full store/search/update/delete/health/metadata cycle ✅
+- ContextBuilder: memory+knowledge+emotion assembly ✅
+- MemoryProvider: graceful health degradation without DB; search SQL compiles against the PostgreSQL dialect (incl. the `CAST(tags AS VARCHAR) ILIKE` tag filter) ✅
+- Path-traversal guard verified ✅
+
+## One thing to flag
+
+`core/config.py`, `core/event_bus.py` show as modified and `claude-v21-part2.log` appeared — **these are not mine**. They add Part 2 features (`redis_enabled`, `planner_model`, `context_default_limit`), so a concurrent Part 2 process is editing the repo. I left them untouched. My Part 1 code is isolated and works with either the original or updated `CoreSettings` (it only reads `qmd_dir` and defines its own settings classes).
+wledge_provider -> HCC_KNOWLEDGE_PROVIDER
+  CoreSettings.qmd_dir (reused)            -> HCC_QMD_DIR
+  ManagerSettings.events_enabled           -> HCC_EVENTS_ENABLED
+
+Verification
+------------
+- py_compile: all 6 modules OK
+- import smoke: new + existing modules import cleanly (no regressions)
+- QMD provider: store/search/update/delete/health/metadata end-to-end OK
+- ContextBuilder: memory+knowledge+emotion assembly OK (injected fake memory)
+- MemoryProvider: health degrades gracefully w/o DB; metadata OK;
+  search SQL compiles against PostgreSQL dialect (incl. JSON-tag CAST/ILIKE)
+- Path-traversal guard on knowledge delete/update verified (returns False)
+
+Existing files: none modified.

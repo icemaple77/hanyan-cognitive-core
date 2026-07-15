@@ -1,4 +1,4 @@
-"""Asynchronous event bus built on Redis Pub/Sub for HCC v2.
+"""Asynchronous event bus for HCC v2 with an optional Redis backend.
 
 The bus lets loosely-coupled components react to knowledge-layer events
 (memory creation, knowledge merges, emotional-state changes, dream cycles,
@@ -6,9 +6,20 @@ The bus lets loosely-coupled components react to knowledge-layer events
 (``timestamp``, ``source``, ``payload``) and are serialised to JSON on the
 wire.
 
+Two interchangeable backends are provided behind a single public interface:
+
+* **Redis Pub/Sub** — used when ``HCC_REDIS_ENABLED`` is true (and the
+  ``redis`` package is importable). Suitable for multi-process deployments.
+* **In-memory broker** — the default. A process-global broker built on
+  :class:`asyncio.Queue` that requires no external services, so publishers and
+  subscribers created anywhere in the same process see each other's events.
+
+Both backends expose the identical :meth:`EventBus.publish_event` /
+:meth:`EventBus.subscribe` API, so callers never need to know which is active.
+
 Example
 -------
->>> bus = EventBus()
+>>> bus = EventBus()                     # in-memory by default
 >>> await bus.connect()
 >>> async def on_event(event: Event) -> None:
 ...     print(event.event_type, event.payload)
@@ -21,13 +32,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from types import TracebackType
 from typing import Any, Awaitable, Callable
 
-import redis.asyncio as aioredis
+try:  # Redis is an optional dependency (HCC_REDIS_ENABLED=false by default).
+    import redis.asyncio as aioredis
+except ImportError:  # pragma: no cover - exercised only without redis installed
+    aioredis = None  # type: ignore[assignment]
 
 from core.config import CoreSettings, core_settings
 
@@ -150,15 +165,53 @@ _EVENT_CLASSES: dict[EventType, type[Event]] = {
 EventCallback = Callable[[Event], Awaitable[None] | None]
 
 
+class _InMemoryBroker:
+    """Process-global, asyncio-based fan-out broker for the in-memory backend.
+
+    A single shared instance (see :data:`_GLOBAL_BROKER`) lets :class:`EventBus`
+    objects created independently across a process exchange events without any
+    external service. Messages are the same JSON strings used on the Redis wire,
+    so both backends behave identically from the caller's perspective.
+    """
+
+    def __init__(self) -> None:
+        self._subscribers: dict[str, set[asyncio.Queue[str]]] = defaultdict(set)
+
+    def register(self, channel: str, queue: asyncio.Queue[str]) -> None:
+        """Attach ``queue`` so it receives messages published to ``channel``."""
+        self._subscribers[channel].add(queue)
+
+    def unregister(self, channel: str, queue: asyncio.Queue[str]) -> None:
+        """Detach ``queue`` from ``channel`` (no-op if already removed)."""
+        self._subscribers.get(channel, set()).discard(queue)
+
+    async def publish(self, channel: str, message: str) -> None:
+        """Fan ``message`` out to every queue subscribed to ``channel``."""
+        for queue in list(self._subscribers.get(channel, ())):
+            queue.put_nowait(message)
+
+
+# Shared, process-wide broker backing the in-memory EventBus backend.
+_GLOBAL_BROKER = _InMemoryBroker()
+
+
 class EventBus:
-    """Redis Pub/Sub event bus with typed events and clean async lifecycle.
+    """Typed event bus with a Redis or in-memory backend and async lifecycle.
+
+    The backend is chosen at construction time from ``HCC_REDIS_ENABLED``:
+    when true (and the ``redis`` package is importable) Redis Pub/Sub is used;
+    otherwise a process-global in-memory broker is used. The public API is
+    identical for both.
 
     Parameters
     ----------
     redis_url:
         Redis connection URL. Defaults to ``HCC_REDIS_URL``.
     settings:
-        Optional :class:`CoreSettings` (used for channel prefix / source).
+        Optional :class:`CoreSettings` (channel prefix, source, redis switch).
+    use_redis:
+        Explicit backend override. When ``None`` (default) the backend is
+        derived from settings + availability of the ``redis`` package.
     """
 
     def __init__(
@@ -166,27 +219,50 @@ class EventBus:
         redis_url: str | None = None,
         *,
         settings: CoreSettings | None = None,
+        use_redis: bool | None = None,
     ) -> None:
         self._settings = settings or core_settings
         self._url = redis_url or self._settings.redis_url
         self._prefix = self._settings.event_channel_prefix
-        self._client: aioredis.Redis | None = None
         self._tasks: list[asyncio.Task[None]] = []
-        self._pubsubs: list[aioredis.client.PubSub] = []
+
+        if use_redis is None:
+            use_redis = bool(self._settings.redis_enabled)
+        if use_redis and aioredis is None:
+            logger.warning(
+                "HCC_REDIS_ENABLED is true but the 'redis' package is not "
+                "installed; falling back to the in-memory EventBus backend."
+            )
+            use_redis = False
+        self._use_redis = use_redis
+
+        # Redis backend state.
+        self._client: "aioredis.Redis | None" = None
+        self._pubsubs: list[Any] = []
+        # In-memory backend state.
+        self._broker = _GLOBAL_BROKER
+        self._queues: list[tuple[str, asyncio.Queue[str]]] = []
+        self._connected = False
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+    @property
+    def backend(self) -> str:
+        """Return the active backend name: ``"redis"`` or ``"memory"``."""
+        return "redis" if self._use_redis else "memory"
+
     async def connect(self) -> "EventBus":
-        """Open the Redis connection (idempotent). Returns ``self``."""
-        if self._client is None:
+        """Open the backend connection (idempotent). Returns ``self``."""
+        if self._use_redis and self._client is None:
             self._client = aioredis.from_url(
                 self._url, encoding="utf-8", decode_responses=True
             )
+        self._connected = True
         return self
 
     async def close(self) -> None:
-        """Cancel subscriptions and close all Redis connections."""
+        """Cancel subscriptions and release all backend resources."""
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -196,16 +272,22 @@ class EventBus:
                 pass
         self._tasks.clear()
 
+        # Redis cleanup.
         for pubsub in self._pubsubs:
             try:
                 await pubsub.aclose()
             except Exception:  # noqa: BLE001
                 logger.debug("Error closing pubsub", exc_info=True)
         self._pubsubs.clear()
-
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+
+        # In-memory cleanup.
+        for channel, queue in self._queues:
+            self._broker.unregister(channel, queue)
+        self._queues.clear()
+        self._connected = False
 
     async def __aenter__(self) -> "EventBus":
         return await self.connect()
@@ -219,8 +301,19 @@ class EventBus:
         await self.close()
 
     @property
-    def client(self) -> aioredis.Redis:
-        """Return the live Redis client, raising if not connected."""
+    def client(self) -> "aioredis.Redis":
+        """Return the live Redis client, raising if unavailable.
+
+        Raises
+        ------
+        RuntimeError
+            If the in-memory backend is active or the bus is not connected.
+        """
+        if not self._use_redis:
+            raise RuntimeError(
+                "EventBus is using the in-memory backend; no Redis client is "
+                "available. Set HCC_REDIS_ENABLED=true to use Redis."
+            )
         if self._client is None:
             raise RuntimeError(
                 "EventBus is not connected; call connect() or use "
@@ -232,7 +325,7 @@ class EventBus:
     # Channel helpers
     # ------------------------------------------------------------------
     def _channel(self, event_type: EventType) -> str:
-        """Return the fully-qualified Redis channel for an event type."""
+        """Return the fully-qualified channel name for an event type."""
         return f"{self._prefix}:{event_type.value}"
 
     # ------------------------------------------------------------------
@@ -256,15 +349,25 @@ class EventBus:
         source:
             Emitting component; defaults to ``HCC_EVENT_SOURCE``.
         """
-        et = EventType(event_type) if not isinstance(event_type, EventType) else event_type
+        et = (
+            EventType(event_type)
+            if not isinstance(event_type, EventType)
+            else event_type
+        )
         klass = _EVENT_CLASSES.get(et, Event)
         event = klass(
             event_type=et,
             payload=data or {},
             source=source or self._settings.event_source,
         )
-        await self.client.publish(self._channel(et), event.to_json())
-        logger.debug("Published %s to %s", et.value, self._channel(et))
+        channel = self._channel(et)
+        if self._use_redis:
+            await self.client.publish(channel, event.to_json())
+        else:
+            if not self._connected:
+                await self.connect()
+            await self._broker.publish(channel, event.to_json())
+        logger.debug("Published %s to %s (%s)", et.value, channel, self.backend)
         return event
 
     async def subscribe(
@@ -291,35 +394,63 @@ class EventBus:
         """
         if isinstance(event_types, EventType):
             event_types = [event_types]
-
-        pubsub = self.client.pubsub()
         channels = [self._channel(et) for et in event_types]
-        await pubsub.subscribe(*channels)
-        self._pubsubs.append(pubsub)
 
-        task = asyncio.create_task(self._reader(pubsub, callback))
+        if self._use_redis:
+            pubsub = self.client.pubsub()
+            await pubsub.subscribe(*channels)
+            self._pubsubs.append(pubsub)
+            task = asyncio.create_task(self._redis_reader(pubsub, callback))
+        else:
+            if not self._connected:
+                await self.connect()
+            queue: asyncio.Queue[str] = asyncio.Queue()
+            for channel in channels:
+                self._broker.register(channel, queue)
+                self._queues.append((channel, queue))
+            task = asyncio.create_task(self._memory_reader(queue, callback))
+
         self._tasks.append(task)
         return task
 
-    async def _reader(
-        self, pubsub: aioredis.client.PubSub, callback: EventCallback
-    ) -> None:
-        """Dispatch loop: decode messages and invoke ``callback``."""
+    # ------------------------------------------------------------------
+    # Dispatch loops
+    # ------------------------------------------------------------------
+    @staticmethod
+    async def _dispatch(callback: EventCallback, raw: str) -> None:
+        """Decode ``raw`` JSON into an :class:`Event` and invoke ``callback``."""
+        try:
+            event = Event.from_json(raw)
+        except (json.JSONDecodeError, KeyError, ValueError):
+            logger.warning("Dropping malformed event", exc_info=True)
+            return
+        try:
+            result = callback(event)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:  # noqa: BLE001
+            logger.exception("Event callback raised for %s", event.event_type)
+
+    async def _redis_reader(self, pubsub: Any, callback: EventCallback) -> None:
+        """Redis dispatch loop: decode messages and invoke ``callback``."""
         try:
             async for message in pubsub.listen():
                 if message.get("type") != "message":
                     continue
-                try:
-                    event = Event.from_json(message["data"])
-                except (json.JSONDecodeError, KeyError, ValueError):
-                    logger.warning("Dropping malformed event", exc_info=True)
-                    continue
-                try:
-                    result = callback(event)
-                    if asyncio.iscoroutine(result):
-                        await result
-                except Exception:  # noqa: BLE001
-                    logger.exception("Event callback raised for %s", event.event_type)
+                await self._dispatch(callback, message["data"])
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("Event reader loop terminated unexpectedly")
+
+    async def _memory_reader(
+        self, queue: asyncio.Queue[str], callback: EventCallback
+    ) -> None:
+        """In-memory dispatch loop: drain ``queue`` and invoke ``callback``."""
+        try:
+            while True:
+                raw = await queue.get()
+                await self._dispatch(callback, raw)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
