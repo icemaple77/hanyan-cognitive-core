@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Float, DateTime, Text, JSON
+from sqlalchemy import Column, String, Float, DateTime, Text, JSON, Boolean
 from pgvector.sqlalchemy import Vector
 
 from gateway.core.database import Base
@@ -19,6 +19,8 @@ class Memory(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(128), index=True, nullable=False)
+    agent_id = Column(String(64), index=True, default="default", nullable=False)
+    shared = Column(Boolean, default=False)
     type = Column(String(64), default="general", index=True)
     content = Column(Text, nullable=False)
     summary = Column(Text, default="")

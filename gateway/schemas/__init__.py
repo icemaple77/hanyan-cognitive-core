@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 class MemoryCreate(BaseModel):
     user_id: str = Field(..., description="User identifier")
+    agent_id: str = "default"
+    shared: bool = False
     type: str = "general"
     content: str = Field(..., min_length=1)
     summary: str = ""
@@ -28,6 +30,8 @@ class MemoryUpdate(BaseModel):
 class MemorySearch(BaseModel):
     query: str = ""
     user_id: str | None = None
+    agent_id: str | None = None
+    shared: bool | None = None
     type: str | None = None
     limit: int = Field(default=20, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
@@ -36,6 +40,8 @@ class MemorySearch(BaseModel):
 class MemoryResponse(BaseModel):
     id: str
     user_id: str
+    agent_id: str
+    shared: bool
     type: str
     content: str
     summary: str

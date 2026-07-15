@@ -250,6 +250,7 @@ class QMDGenerator:
             result = await session.execute(
                 select(Memory)
                 .where(Memory.status == "active")
+                .where(Memory.shared == True)
                 .order_by(Memory.created_at)
             )
             return list(result.scalars().all())

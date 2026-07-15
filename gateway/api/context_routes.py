@@ -46,6 +46,8 @@ class ContextRequest(BaseModel):
 
     query: str = Field(..., description="Free-text query driving retrieval.")
     user_id: str = Field(..., description="Owner whose context is assembled.")
+    agent_id: str = Field(default="default", description="Agent scope for retrieval.")
+    include_shared: bool = Field(default=True, description="Include shared global memories.")
     include_emotion: bool = Field(
         default=False,
         description="Fold the emotional state into the context when available.",

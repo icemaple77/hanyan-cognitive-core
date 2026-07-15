@@ -112,6 +112,7 @@ async def set_profile(profile: str):
 
 class OptimizeRequest(BaseModel):
     workspace_dir: str
+    agent_id: str = "default"
     dry_run: bool = False
 
 
@@ -121,6 +122,7 @@ async def scan_workspace(data: OptimizeRequest):
     scan = opt.scan_all_files()
     return {
         "workspace": data.workspace_dir,
+        "agent_id": data.agent_id,
         "bootstrap": [str(p) for p in scan["bootstrap"]],
         "absorbable": [str(p) for p in scan["absorbable"]],
         "other": [str(p) for p in scan["other"]],
@@ -131,6 +133,7 @@ async def scan_workspace(data: OptimizeRequest):
 async def run_optimization(data: OptimizeRequest):
     opt = get_optimizer(data.workspace_dir)
     result = opt.optimize(dry_run=data.dry_run, memory_count=42)
+    result["agent_id"] = data.agent_id
     return result
 
 
@@ -139,4 +142,8 @@ async def generate_bootstrap(data: OptimizeRequest):
     opt = get_optimizer(data.workspace_dir)
     contents = opt.generate_bootstrap(memory_count=42)
     written = opt.write_bootstrap(contents)
-    return {"workspace": data.workspace_dir, "files_written": [str(p) for p in written]}
+    return {
+        "workspace": data.workspace_dir,
+        "agent_id": data.agent_id,
+        "files_written": [str(p) for p in written]
+    }

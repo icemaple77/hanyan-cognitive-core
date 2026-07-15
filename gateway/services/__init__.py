@@ -27,6 +27,12 @@ class MemoryService:
         if query.user_id:
             stmt = stmt.where(Memory.user_id == query.user_id)
             count_stmt = count_stmt.where(Memory.user_id == query.user_id)
+        if query.agent_id:
+            stmt = stmt.where(Memory.agent_id == query.agent_id)
+            count_stmt = count_stmt.where(Memory.agent_id == query.agent_id)
+        if query.shared is not None:
+            stmt = stmt.where(Memory.shared == query.shared)
+            count_stmt = count_stmt.where(Memory.shared == query.shared)
         if query.type:
             stmt = stmt.where(Memory.type == query.type)
             count_stmt = count_stmt.where(Memory.type == query.type)
