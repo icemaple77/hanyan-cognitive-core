@@ -9,6 +9,9 @@ pydantic-settings>=2.0.0
 python-dotenv>=1.0.0
 uuid6>=2024.7.10
 mcp>=1.2.0
+httpx>=0.27.0
+aiosqlite>=0.20.0
+pyyaml>=6.0
 
 [dev]
 pytest>=8.0.0

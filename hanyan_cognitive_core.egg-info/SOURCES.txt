@@ -17,3 +17,8 @@ hanyan_cognitive_core.egg-info/SOURCES.txt
 hanyan_cognitive_core.egg-info/dependency_links.txt
 hanyan_cognitive_core.egg-info/requires.txt
 hanyan_cognitive_core.egg-info/top_level.txt
+scanner/__init__.py
+scanner/absorber.py
+scanner/config.py
+scanner/parser.py
+scanner/watcher.py
