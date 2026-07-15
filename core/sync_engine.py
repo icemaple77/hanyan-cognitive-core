@@ -633,4 +633,75 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--watch" in sys.argv:
+        watch_qmd()
+    else:
+        main()
+
+
+def watch_qmd(callback: callable | None = None) -> None:
+    """Watch QMD directory for changes and sync back to DB in real time.
+
+    Uses watchdog ``Observer`` to detect file modification / creation events
+    on ``*.md`` files under the configured ``HCC_QMD_DIR`` and merges them
+    back into PostgreSQL immediately.
+
+    Requires the ``watchdog`` package (``pip install watchdog``).
+    """
+    import time
+
+    try:
+        from watchdog.observers import Observer
+        from watchdog.events import FileSystemEventHandler
+    except ImportError:
+        print("watchdog not installed. Run: pip install watchdog")
+        return
+
+    qmd_dir = Path(core_settings.qmd_dir).expanduser()
+
+    class _QMDHandler(FileSystemEventHandler):
+        def on_modified(self, event):
+            if not event.src_path.endswith(".md"):
+                return
+            print(f"[watch] modified: {event.src_path}")
+            asyncio.run(_sync_single_file(event.src_path))
+
+        def on_created(self, event):
+            if not event.src_path.endswith(".md"):
+                return
+            print(f"[watch] created: {event.src_path}")
+            asyncio.run(_sync_single_file(event.src_path))
+
+    observer = Observer()
+    observer.schedule(_QMDHandler(), str(qmd_dir), recursive=True)
+    observer.start()
+    print(f"[watch] Watching {qmd_dir} for .md changes...")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
+
+
+async def _sync_single_file(filepath: str) -> None:
+    """Parse a single QMD file at ``filepath`` and merge its changes into DB."""
+    path = Path(filepath)
+    if not path.exists() or not path.is_file():
+        return
+    engine = SyncEngine()
+    doc = parse_qmd_file(path)
+    if not doc or not doc.memory_id:
+        return
+    async with engine._session_factory() as session:
+        memory = await session.get(Memory, doc.memory_id)
+        if memory is None:
+            return
+        changes = engine._diff(memory, doc)
+        if not changes:
+            return
+        engine._apply(memory, changes)
+        memory.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await session.commit()
+        print(f"[watch] synced {doc.memory_id} from {path.name}: {sorted(changes)}")
