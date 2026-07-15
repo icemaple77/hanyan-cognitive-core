@@ -12,6 +12,7 @@ from core.personality import get_personality_engine
 from core.subconscious import get_subconscious
 from core.model_router import get_model_router
 from core.optimizer import get_optimizer
+from core.knowledge_indexer import get_indexer
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -147,3 +148,37 @@ async def generate_bootstrap(data: OptimizeRequest):
         "agent_id": data.agent_id,
         "files_written": [str(p) for p in written]
     }
+
+
+class IndexRequest(BaseModel):
+    workspace_dir: str
+    api_base_url: str = "http://localhost:8000"
+    agent_id: str = "main"
+    dry_run: bool = False
+
+
+@router.post("/indexer/scan", summary="Scan workspace knowledge files")
+async def scan_knowledge(data: IndexRequest):
+    idx = get_indexer(data.workspace_dir)
+    scan = idx.scan()
+    return {
+        "workspace": data.workspace_dir,
+        "found": sum(len(v) for v in scan.values()),
+        "by_category": {k: len(v) for k, v in scan.items()},
+    }
+
+
+@router.post("/indexer/run", summary="Index workspace knowledge into HCC")
+async def run_indexer(data: IndexRequest):
+    idx = get_indexer(data.workspace_dir)
+    scan = idx.scan()
+    if not scan:
+        return {"status": "nothing_to_index", "found": 0}
+    if data.dry_run:
+        return {
+            "status": "dry_run",
+            "found": sum(len(v) for v in scan.values()),
+            "by_category": {k: len(v) for k, v in scan.items()},
+        }
+    result = idx.index_to_knowledge(scan, data.api_base_url, data.agent_id)
+    return result
