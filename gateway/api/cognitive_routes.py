@@ -11,6 +11,7 @@ from core.forget import get_forget_engine
 from core.personality import get_personality_engine
 from core.subconscious import get_subconscious
 from core.model_router import get_model_router
+from core.optimizer import get_optimizer
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -107,3 +108,35 @@ async def set_profile(profile: str):
     router = get_model_router()
     router.set_profile(profile)
     return {"profile": profile, "summary": router.get_profile_summary()}
+
+
+class OptimizeRequest(BaseModel):
+    workspace_dir: str
+    dry_run: bool = False
+
+
+@router.post("/optimizer/scan", summary="Scan workspace for absorbable files")
+async def scan_workspace(data: OptimizeRequest):
+    opt = get_optimizer(data.workspace_dir)
+    scan = opt.scan_all_files()
+    return {
+        "workspace": data.workspace_dir,
+        "bootstrap": [str(p) for p in scan["bootstrap"]],
+        "absorbable": [str(p) for p in scan["absorbable"]],
+        "other": [str(p) for p in scan["other"]],
+    }
+
+
+@router.post("/optimizer/run", summary="Run full optimization cycle")
+async def run_optimization(data: OptimizeRequest):
+    opt = get_optimizer(data.workspace_dir)
+    result = opt.optimize(dry_run=data.dry_run, memory_count=42)
+    return result
+
+
+@router.post("/optimizer/bootstrap", summary="Generate bootstrap files")
+async def generate_bootstrap(data: OptimizeRequest):
+    opt = get_optimizer(data.workspace_dir)
+    contents = opt.generate_bootstrap(memory_count=42)
+    written = opt.write_bootstrap(contents)
+    return {"workspace": data.workspace_dir, "files_written": [str(p) for p in written]}
