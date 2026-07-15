@@ -124,7 +124,7 @@ class ForgetEngine:
 
     def get_stats(self, memory: dict[str, Any]) -> MemoryStats:
         """Get detailed stats for display/debug."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         created = memory.get("created_at")
         last_access = memory.get("last_access")
 
@@ -132,12 +132,16 @@ class ForgetEngine:
             created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
         else:
             created_dt = created or now
+        if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo is not None:
+            created_dt = created_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
         if last_access:
             if isinstance(last_access, str):
                 access_dt = datetime.fromisoformat(last_access.replace("Z", "+00:00"))
             else:
                 access_dt = last_access
+            if hasattr(access_dt, 'tzinfo') and access_dt.tzinfo is not None:
+                access_dt = access_dt.astimezone(timezone.utc).replace(tzinfo=None)
         else:
             access_dt = created_dt
 
