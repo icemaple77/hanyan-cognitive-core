@@ -5,12 +5,27 @@ services:
       - "8000:8000"
     environment:
       - HCC_DATABASE_URL=postgresql+asyncpg://hcc:hcc@db:5432/hcc
+      - HCC_REDIS_URL=redis://redis:6379/0
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - ./gateway:/app/gateway
     command: uvicorn gateway.main:app --host 0.0.0.0 --port 8000 --reload
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   db:
     image: pgvector/pgvector:pg17
@@ -31,3 +46,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:

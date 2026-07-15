@@ -1,5 +1,10 @@
 README.md
 pyproject.toml
+core/__init__.py
+core/config.py
+core/event_bus.py
+core/qmd_generator.py
+core/redis_manager.py
 gateway/main.py
 gateway/api/__init__.py
 gateway/api/health.py
