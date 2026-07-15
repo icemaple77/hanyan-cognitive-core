@@ -72,6 +72,28 @@ class ScannerSettings(BaseSettings):
         gt=0,
         description="HTTP request timeout (seconds) for Memory API calls.",
     )
+    generate_qmd: bool = Field(
+        default=False,
+        description=(
+            "If true, regenerate the QMD knowledge tree after a scan and record "
+            "which QMD file each absorbed document produced "
+            "(HCC_SCANNER_GENERATE_QMD)."
+        ),
+    )
+    sync: bool = Field(
+        default=False,
+        description=(
+            "If true, run a full bidirectional PostgreSQL<->QMD sync after each "
+            "scan pass (HCC_SCANNER_SYNC)."
+        ),
+    )
+    watch: bool = Field(
+        default=False,
+        description=(
+            "If true, continuously watch the scan dirs for changes using "
+            "watchdog instead of polling (HCC_SCANNER_WATCH)."
+        ),
+    )
     state_db: Path = Field(
         default_factory=_default_state_db,
         description="Path to the SQLite database used for state tracking.",

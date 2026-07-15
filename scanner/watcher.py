@@ -7,10 +7,22 @@ changed files are parsed and handed to the :class:`~scanner.absorber.Absorber`.
 
 State is persisted with :mod:`aiosqlite` so re-runs skip already-absorbed,
 unmodified files.
+
+Beyond the original one-shot / polling scan the watcher gains v2 capabilities:
+
+* ``--sync`` -- after absorbing, run a full bidirectional PostgreSQL<->QMD sync
+  via :class:`~core.sync_engine.SyncEngine` so the markdown knowledge tree is
+  regenerated (and any human QMD edits are merged back into the database).
+* QMD tracking -- once a QMD tree exists, the state DB records which QMD
+  markdown file each scanned source file ultimately produced (via the memory
+  id embedded in the QMD front matter).
+* ``--watch`` -- continuously monitor the scan dirs for changes using
+  :mod:`watchdog` (inotify/FSEvents), debouncing bursts of edits into scans.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import fnmatch
 import hashlib
@@ -33,6 +45,7 @@ CREATE TABLE IF NOT EXISTS scanned_files (
     last_modified REAL NOT NULL,
     status TEXT NOT NULL,
     memory_id TEXT,
+    qmd_path TEXT,
     scanned_at REAL NOT NULL
 );
 """
@@ -98,8 +111,17 @@ class Watcher:
         conn = await aiosqlite.connect(db_path)
         conn.row_factory = aiosqlite.Row
         await conn.executescript(_SCHEMA)
+        await self._migrate(conn)
         await conn.commit()
         return conn
+
+    @staticmethod
+    async def _migrate(conn: aiosqlite.Connection) -> None:
+        """Apply lightweight, idempotent schema migrations to older state DBs."""
+        async with conn.execute("PRAGMA table_info(scanned_files)") as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+        if "qmd_path" not in columns:
+            await conn.execute("ALTER TABLE scanned_files ADD COLUMN qmd_path TEXT")
 
     async def _get_record(
         self, conn: aiosqlite.Connection, path: str

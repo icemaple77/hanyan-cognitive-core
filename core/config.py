@@ -66,6 +66,23 @@ class CoreSettings(BaseSettings):
         description="If true, auto git add+commit the QMD dir after generation.",
     )
 
+    # --- Bidirectional sync engine --------------------------------------
+    sync_interval: int = Field(
+        default=300,
+        ge=1,
+        description=(
+            "Seconds between sync passes when the SyncEngine runs as a loop "
+            "(HCC_SYNC_INTERVAL)."
+        ),
+    )
+    sync_git_enabled: bool = Field(
+        default=False,
+        description=(
+            "If true, auto git add+commit the QMD dir after each sync pass "
+            "(HCC_SYNC_GIT_ENABLED). Independent of HCC_QMD_GIT_ENABLED."
+        ),
+    )
+
     def ttl_for(self, category: str) -> int:
         """Return the default TTL (seconds) for a working-memory ``category``.
 
