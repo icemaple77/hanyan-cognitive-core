@@ -64,7 +64,8 @@ class Subconscious:
         return self._conscious[-limit:]
 
     async def retrieve(self, query: str, memory_provider: Any = None,
-                       limit: int = 10, user_id: str | None = None) -> list[SubconsciousResult]:
+                       limit: int = 10, user_id: str | None = None,
+                       agent_id: str | None = None) -> list[SubconsciousResult]:
         """Three-layer retrieval.
 
         Parameters
@@ -97,9 +98,10 @@ class Subconscious:
         if memory_provider:
             try:
                 preconscious = await memory_provider.search(
-                    query=query, user_id=user_id, limit=limit * 2
+                    query=query, user_id=user_id, agent_id=agent_id, limit=limit * 2
                 )
-                for item in (preconscious.get("items") or preconscious if isinstance(preconscious, list) else []):
+                items = preconscious.get("items", []) if isinstance(preconscious, dict) else (preconscious if isinstance(preconscious, list) else [])
+                for item in items:
                     memory_id = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
                     content = item.get("content") if isinstance(item, dict) else getattr(item, "content", "")
                     importance = item.get("importance", 0.5) if isinstance(item, dict) else getattr(item, "importance", 0.5)
@@ -121,9 +123,10 @@ class Subconscious:
         if memory_provider:
             try:
                 subconscious = await memory_provider.search(
-                    query=query, user_id=user_id, limit=limit
+                    query=query, user_id=user_id, agent_id=agent_id, limit=limit
                 )
-                for item in (subconscious.get("items") or subconscious if isinstance(subconscious, list) else []):
+                items = subconscious.get("items", []) if isinstance(subconscious, dict) else (subconscious if isinstance(subconscious, list) else [])
+                for item in items:
                     memory_id = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
                     content = item.get("content") if isinstance(item, dict) else getattr(item, "content", "")
                     importance = item.get("importance", 0.5) if isinstance(item, dict) else getattr(item, "importance", 0.5)

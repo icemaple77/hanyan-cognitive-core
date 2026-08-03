@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.database import get_session
 from gateway.models import Memory
+from gateway.schemas.memory import MemorySearch
+from gateway.services import MemoryService
 from core.orchestrator import get_orchestrator
 from core.forget import get_forget_engine
 from core.personality import get_personality_engine
@@ -23,6 +25,7 @@ class EvaluateRequest(BaseModel):
     content: str
     source: str = "conversation"
     user_id: str = "default"
+    agent_id: str | None = None
 
 
 @router.post("/orchestrator/evaluate", summary="Evaluate whether to store")
@@ -79,11 +82,31 @@ async def process_personality(data: EvaluateRequest):
     return {"updated_preferences": updated, "summary": engine.get_summary()}
 
 
+class _DBMemoryProvider:
+    """把 MemoryService 包成 subconscious.retrieve() 期望的 memory_provider 接口。
+    之前 subconscious_retrieve 路由从没传 memory_provider,导致三层检索的
+    preconscious/subconscious 两层(真正查数据库的部分)从未被执行——只有
+    conscious 层(当次请求内存)在跑,575 条历史记忆实际上从未被真正检索过。"""
+    def __init__(self, session: AsyncSession):
+        self.service = MemoryService(session)
+
+    async def search(self, query: str, user_id: str | None = None,
+                     agent_id: str | None = None, limit: int = 10) -> dict:
+        q = MemorySearch(query=query, user_id=user_id, agent_id=agent_id, limit=limit)
+        memories, _total = await self.service.search(q)
+        return {"items": [
+            {"id": m.id, "content": m.content, "importance": m.importance, "tags": m.tags or []}
+            for m in memories
+        ]}
+
+
 @router.post("/subconscious/retrieve", summary="Three-layer memory retrieval")
-async def subconscious_retrieve(data: EvaluateRequest):
+async def subconscious_retrieve(data: EvaluateRequest, session: AsyncSession = Depends(get_session)):
     sub = get_subconscious()
     sub.add_to_conscious(data.content, data.source)
-    results = await sub.retrieve(data.content, limit=10, user_id=data.user_id)
+    provider = _DBMemoryProvider(session)
+    results = await sub.retrieve(data.content, memory_provider=provider, limit=10,
+                                 user_id=data.user_id, agent_id=data.agent_id)
     return {
         "conscious_count": len(sub.get_conscious()),
         "results": [
