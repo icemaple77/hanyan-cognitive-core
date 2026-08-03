@@ -13,6 +13,7 @@ from core.subconscious import get_subconscious
 from core.model_router import get_model_router
 from core.optimizer import get_optimizer
 from core.knowledge_indexer import get_indexer
+from core.dream import get_dream_engine
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -182,3 +183,44 @@ async def run_indexer(data: IndexRequest):
         }
     result = idx.index_to_knowledge(scan, data.api_base_url, data.agent_id)
     return result
+
+
+class DreamRequest(BaseModel):
+    agent_id: str = "default"
+    limit: int = 200
+    persist_knowledge: bool = True
+
+
+@router.post("/dream/consolidate", summary="Nightly memory consolidation (dream)")
+async def dream_consolidate(data: DreamRequest, session: AsyncSession = Depends(get_session)):
+    """做梦:聚类相似记忆 → 合并近似重复 → 提炼模式 → 生成知识摘要。
+    knowledge 条目会作为新的 memory(type=knowledge)存回,供白天检索命中。
+    只读取原始记忆生成摘要,不删除/修改原记忆(遗忘交给 forget_engine 单独处理)。
+    """
+    engine = get_dream_engine()
+    q = select(Memory).where(Memory.agent_id == data.agent_id, Memory.status == "active")
+    q = q.order_by(Memory.created_at.desc()).limit(data.limit)
+    result = await session.execute(q)
+    memories = [
+        {"id": m.id, "content": m.content, "summary": m.summary,
+         "importance": m.importance, "tags": m.tags or [],
+         "created_at": m.created_at, "updated_at": m.updated_at}
+        for m in result.scalars().all()
+    ]
+
+    outcome = await engine.consolidate(memories)
+
+    stored_ids = []
+    if data.persist_knowledge and outcome["knowledge"]:
+        for k in outcome["knowledge"]:
+            mem = Memory(
+                user_id="system", agent_id=data.agent_id, type="knowledge",
+                content=k["summary"], summary=k["title"],
+                importance=k["importance"], tags=k["tags"], source="dream",
+            )
+            session.add(mem)
+            stored_ids.append(mem.id)
+        await session.commit()
+
+    outcome["stored_knowledge_ids"] = stored_ids
+    return outcome
