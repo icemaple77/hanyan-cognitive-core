@@ -19,7 +19,7 @@ LOW_VALUE_PATTERNS = [
     "我上班", "下班了", "睡了", "起床", "去洗澡",
 ]
 
-# Keywords that indicate high importance
+# Keywords that indicate high importance(技术/运维向,原为 OpenClaw 场景设计)
 HIGH_IMPORTANCE_KEYWORDS = [
     "部署", "上线", "完成", "成功", "失败", "决定", "确认",
     "规划", "架构", "设计", "方案", "计划", "发布", "合并",
@@ -27,6 +27,18 @@ HIGH_IMPORTANCE_KEYWORDS = [
     "项目", "配置", "连接", "地址", "密码", "token",
     "记得", "记住", "重要", "关键", "注意",
 ]
+
+# 情感陪伴向关键词。HCC 现在也服务 hanyan(情感陪伴 agent),不能只有技术关键词——
+# 否则"我想你了""今天很难过"这类对陪伴场景最重要的话会因不含任何关键词被判"不值得记"。
+COMPANION_IMPORTANCE_KEYWORDS = [
+    "想你", "爱你", "喜欢你", "离不开", "想我", "爱我",
+    "难过", "开心", "委屈", "心疼", "生气", "吃醋", "孤独", "害怕",
+    "纪念日", "生日", "约定", "承诺", "答应我", "永远",
+    "谢谢你", "对不起", "抱抱", "陪我", "想哭", "崩溃了", "撑不住",
+    "喜欢秋天", "喜欢的季节", "喜欢的颜色", "最喜欢",  # 偏好类事实
+]
+
+HIGH_IMPORTANCE_KEYWORDS = HIGH_IMPORTANCE_KEYWORDS + COMPANION_IMPORTANCE_KEYWORDS
 
 # Topics that tend to be high-value
 HIGH_VALUE_TOPICS = [
@@ -124,13 +136,18 @@ class MemoryOrchestrator:
         return decision
 
     def _similar(self, a: str, b: str) -> float:
-        """Simple Jaccard similarity on word sets."""
-        words_a = set(a.lower().split())
-        words_b = set(b.lower().split())
-        if not words_a or not words_b:
+        """Jaccard similarity on character bigrams.
+        原实现按空格 split() 取词做 Jaccard —— 中文没有空格分词，整句会被当成一个
+        "词"，导致中文相似度判断要么 0% 要么 100%，去重形同虚设。改用字符 2-gram，
+        对中英文都适用（英文退化为词内重叠，仍然合理）。"""
+        def bigrams(s: str) -> set[str]:
+            s = s.lower().strip()
+            return {s[i:i + 2] for i in range(len(s) - 1)} if len(s) >= 2 else {s}
+        set_a, set_b = bigrams(a), bigrams(b)
+        if not set_a or not set_b:
             return 0.0
-        intersection = words_a & words_b
-        union = words_a | words_b
+        intersection = set_a & set_b
+        union = set_a | set_b
         return len(intersection) / len(union)
 
 
