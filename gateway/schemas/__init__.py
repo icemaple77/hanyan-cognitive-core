@@ -51,6 +51,8 @@ class MemoryResponse(BaseModel):
     tags: list[Any]
     source: str
     status: str
+    access_count: int = 0
+    last_access: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

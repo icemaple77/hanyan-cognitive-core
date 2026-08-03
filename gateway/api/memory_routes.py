@@ -1,9 +1,14 @@
 """Memory CRUD routes."""
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.database import get_session
+from gateway.models import Memory
 from gateway.schemas.memory import (
     MemoryCreate,
     MemoryUpdate,
@@ -76,6 +81,28 @@ async def recent_memories(
         items=[MemoryResponse.model_validate(m) for m in memories],
         total=total,
     )
+
+
+class TouchRequest(BaseModel):
+    ids: list[str]
+
+
+@router.post("/memory/touch", summary="Recall reinforces memory (access_count+1, last_access=now)")
+async def touch_memories(data: TouchRequest, session: AsyncSession = Depends(get_session)) -> dict:
+    """检索命中即"复述":access_count+1、last_access刷新 —— 遗忘引擎靠这个数据判断
+    "常被谈起的事该记牢"。被检索到却从不 touch,forget_score 就只会随时间单调下降,
+    等于遗忘机制形同虚设(半年前就是这个状态)。"""
+    if not data.ids:
+        return {"touched": 0}
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    stmt = (
+        sa_update(Memory)
+        .where(Memory.id.in_(data.ids))
+        .values(access_count=Memory.access_count + 1, last_access=now)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    return {"touched": result.rowcount}
 
 
 @router.post("/memory/semantic-search", response_model=MemoryListResponse)

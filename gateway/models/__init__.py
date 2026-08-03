@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Float, DateTime, Text, JSON, Boolean
+from sqlalchemy import Column, String, Float, DateTime, Text, JSON, Boolean, Integer
 from pgvector.sqlalchemy import Vector
 
 from gateway.core.database import Base
@@ -29,5 +29,7 @@ class Memory(Base):
     source = Column(String(64), default="api")
     status = Column(String(32), default="active")
     embedding = Column(Vector(EMBEDDING_DIM), nullable=True)
+    access_count = Column(Integer, default=0, nullable=False)
+    last_access = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

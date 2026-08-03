@@ -67,20 +67,27 @@ class ForgetEngine:
 
     def process(self, memory: dict[str, Any]) -> dict[str, Any]:
         """Process a single memory: compute forget score and suggest action."""
-        now = datetime.now(timezone.utc)
+        # 列是 naive datetime(TIMESTAMP WITHOUT TIME ZONE),ORM 直接返回不带时区的
+        # datetime 对象——和 get_stats() 一样统一转成 naive UTC 再相减,否则
+        # aware(now) - naive(created_dt) 直接报错。process() 之前从没被真调用过。
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         created = memory.get("created_at")
         if isinstance(created, str):
-            created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            created_dt = datetime.fromisoformat(created.replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
         else:
             created_dt = created or now
+            if getattr(created_dt, "tzinfo", None) is not None:
+                created_dt = created_dt.astimezone(timezone.utc).replace(tzinfo=None)
 
         last_access = memory.get("last_access")
         if last_access:
             if isinstance(last_access, str):
-                access_dt = datetime.fromisoformat(last_access.replace("Z", "+00:00"))
+                access_dt = datetime.fromisoformat(last_access.replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
             else:
                 access_dt = last_access
+                if getattr(access_dt, "tzinfo", None) is not None:
+                    access_dt = access_dt.astimezone(timezone.utc).replace(tzinfo=None)
         else:
             access_dt = created_dt
 

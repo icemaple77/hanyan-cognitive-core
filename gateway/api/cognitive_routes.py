@@ -40,33 +40,71 @@ async def evaluate_content(data: EvaluateRequest):
     }
 
 
-@router.get("/forget/scan", summary="Scan memories for decay")
-async def scan_for_forget(session: AsyncSession = Depends(get_session)):
+def _scan_memories(memories: list[Memory]) -> list[dict]:
+    """跑遗忘引擎的真实衰减公式(用真实access_count/last_access,不再是硬编码0/None)。"""
     engine = get_forget_engine()
-    result = await session.execute(select(Memory).order_by(Memory.created_at.desc()).limit(100))
-    memories = list(result.scalars().all())
-
-    results = []
+    out = []
     for m in memories:
-        stats = engine.get_stats({
+        decision = engine.process({
             "id": m.id,
             "content": m.content,
             "importance": m.importance,
-            "access_count": 0,
-            "last_access": None,
+            "access_count": m.access_count,
+            "last_access": m.last_access,
             "created_at": m.created_at,
             "status": m.status,
         })
-        results.append({
-            "id": stats.id,
-            "preview": stats.content[:60],
-            "importance": stats.importance,
-            "forget_score": stats.forget_score,
-            "days_since_access": stats.days_since_access,
-            "suggested_action": "archive" if stats.forget_score > 0.6 else "keep",
-        })
+        decision["preview"] = m.content[:60]
+        out.append(decision)
+    return out
 
+
+@router.get("/forget/scan", summary="Scan memories for decay(只读,不写库)")
+async def scan_for_forget(agent_id: str | None = None, limit: int = 200,
+                          session: AsyncSession = Depends(get_session)):
+    stmt = select(Memory).where(Memory.status == "active")
+    if agent_id:
+        stmt = stmt.where(Memory.agent_id == agent_id)
+    stmt = stmt.order_by(Memory.created_at.desc()).limit(limit)
+    result = await session.execute(stmt)
+    memories = list(result.scalars().all())
+    results = _scan_memories(memories)
     return {"scanned": len(results), "results": results}
+
+
+class ForgetApplyRequest(BaseModel):
+    agent_id: str | None = None
+    limit: int = 500
+    dry_run: bool = True
+
+
+@router.post("/forget/apply", summary="真正执行遗忘(归档,永不物理删除)")
+async def apply_forget(data: ForgetApplyRequest, session: AsyncSession = Depends(get_session)):
+    """scan 只建议,这个才真的写库。archive/delete 建议统一映射成"归档"
+    (status=archived,移出默认检索范围)——按公子原设计,记忆不物理删除,
+    真删除是以后接 NAS 冷备份才该做的事,现在宁可保守。"""
+    stmt = select(Memory).where(Memory.status == "active")
+    if data.agent_id:
+        stmt = stmt.where(Memory.agent_id == data.agent_id)
+    stmt = stmt.order_by(Memory.created_at.desc()).limit(data.limit)
+    result = await session.execute(stmt)
+    memories = list(result.scalars().all())
+    decisions = _scan_memories(memories)
+
+    to_archive = [d for d in decisions if d["suggested_action"] in ("archive", "delete")]
+    if not data.dry_run:
+        by_id = {m.id: m for m in memories}
+        for d in to_archive:
+            by_id[d["id"]].status = "archived"
+        await session.commit()
+
+    return {
+        "scanned": len(decisions),
+        "archived": len(to_archive) if not data.dry_run else 0,
+        "would_archive": len(to_archive),
+        "dry_run": data.dry_run,
+        "archived_ids": [d["id"] for d in to_archive] if not data.dry_run else [],
+    }
 
 
 @router.get("/personality/summary", summary="Get personality profile")
@@ -110,7 +148,8 @@ async def subconscious_retrieve(data: EvaluateRequest, session: AsyncSession = D
     return {
         "conscious_count": len(sub.get_conscious()),
         "results": [
-            {"content": r.content[:100], "source": r.source, "score": r.score, "importance": r.importance}
+            {"content": r.content[:100], "source": r.source, "score": r.score,
+             "importance": r.importance, "memory_id": r.memory_id}
             for r in results[:5]
         ],
     }
