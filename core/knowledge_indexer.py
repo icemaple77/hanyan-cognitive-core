@@ -34,7 +34,10 @@ WATCH_DIRS: dict[str, str] = {
 
 # Files to skip
 SKIP_FILES = {"README.md", "DONE.md"}
-SKIP_PATTERNS = [r"\.git/", r"node_modules/"]
+SKIP_PATTERNS = [r"\.git/", r"node_modules/", r"venv/", r"__pycache__/",
+                  r"\.venv/", r"site-packages/", r"dist-info/",
+                  r"\.agents/", r"_frontend_code/", r"templates/",
+                  r"CHANGELOG", r"LICENSE", r"Privacy"]
 
 
 class WorkspaceKnowledgeIndexer:
@@ -82,7 +85,7 @@ class WorkspaceKnowledgeIndexer:
                 # Skip
                 if f.name in SKIP_FILES:
                     continue
-                if any(re.match(p, rel_str) for p in SKIP_PATTERNS):
+                if any(re.search(p, rel_str) for p in SKIP_PATTERNS):
                     continue
 
                 files.append(self._parse_file(f, category, rel_str))
@@ -145,13 +148,16 @@ class WorkspaceKnowledgeIndexer:
     def index_to_knowledge(self, scan_result: dict[str, list[dict[str, Any]]],
                            api_base_url: str = "http://localhost:8000",
                            agent_id: str = "main") -> dict[str, Any]:
-        """Send scanned files to HCC Knowledge API.
-
-        Uses the existing Knowledge Provider interface.
-        Falls back to storing as Memory with type='knowledge' if
-        no dedicated Knowledge API endpoint is available.
-        """
+        """Send scanned files to HCC Knowledge API."""
         import httpx
+
+        def sanitize(text: str, max_len: int = 8000) -> str:
+            # Strip null bytes, normalize unicode, cap length
+            cleaned = text.replace("\x00", "").replace("\uffff", "")
+            # Replace common problematic control chars
+            cleaned = "".join(c if c >= " " or c in "\n\r\t" else " " for c in cleaned)
+            # Truncate to safe size for API
+            return cleaned[:max_len]
 
         total = sum(len(files) for files in scan_result.values())
         indexed = 0
@@ -162,16 +168,14 @@ class WorkspaceKnowledgeIndexer:
             by_category[category] = 0
             for file_info in files:
                 try:
-                    # Store as knowledge entry via Memory API
-                    # with special type to distinguish from regular memories
                     resp = httpx.post(
                         f"{api_base_url}/api/v1/memory/store",
                         json={
                             "user_id": agent_id,
                             "agent_id": agent_id,
-                            "shared": True,  # Knowledge is shared
+                            "shared": True,
                             "type": f"knowledge_{category}",
-                            "content": file_info["content"],
+                            "content": sanitize(file_info["content"]),
                             "summary": file_info["summary"],
                             "tags": file_info["tags"],
                             "source": f"workspace/{file_info['source_path']}",
