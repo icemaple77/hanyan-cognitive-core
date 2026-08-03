@@ -69,3 +69,4 @@ class SemanticSearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=100)
     user_id: str | None = None
     agent_id: str | None = None
+    type: str | None = None
