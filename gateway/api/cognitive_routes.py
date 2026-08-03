@@ -274,6 +274,7 @@ async def dream_consolidate(data: DreamRequest, session: AsyncSession = Depends(
 
     stored_ids = []
     if data.persist_knowledge and outcome["knowledge"]:
+        created = []
         for k in outcome["knowledge"]:
             mem = Memory(
                 user_id="system", agent_id=data.agent_id, type="knowledge",
@@ -281,7 +282,11 @@ async def dream_consolidate(data: DreamRequest, session: AsyncSession = Depends(
                 importance=k["importance"], tags=k["tags"], source="dream",
             )
             session.add(mem)
-            stored_ids.append(mem.id)
+            created.append(mem)
+        # id 是 Column(default=uuid4) 的客户端默认值,flush 时才真正生成/可读,
+        # 之前在 add() 后立刻读 mem.id 一直是 None(数据本身存对了,只是回传的id不对)
+        await session.flush()
+        stored_ids = [m.id for m in created]
         await session.commit()
 
     outcome["stored_knowledge_ids"] = stored_ids
