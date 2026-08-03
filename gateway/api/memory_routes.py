@@ -88,6 +88,7 @@ async def semantic_search_memories(
         embedding=query.embedding,
         limit=query.limit,
         user_id=query.user_id,
+        agent_id=query.agent_id,
     )
     return MemoryListResponse(
         items=[MemoryResponse.model_validate(m) for m, _ in results],

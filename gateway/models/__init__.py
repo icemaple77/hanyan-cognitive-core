@@ -11,7 +11,7 @@ from gateway.core.database import Base
 # Dimensionality of the stored embeddings. 768 matches common sentence-embedding
 # models (e.g. all-mpnet-base-v2, nomic-embed-text). Keep in sync with the value
 # used by the embedding provider in gateway.core.embeddings.
-EMBEDDING_DIM = 768
+EMBEDDING_DIM = 1024  # Qwen3-Embedding-0.6B 原生维度(2026-08 接入,0条历史数据用旧768维,无迁移负担)
 
 
 class Memory(Base):

@@ -16,6 +16,7 @@ class MemoryCreate(BaseModel):
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
     tags: list[str] = Field(default_factory=list)
     source: str = "api"
+    embedding: list[float] | None = Field(default=None, description="预计算好的向量,客户端算好传入")
 
 
 class MemoryUpdate(BaseModel):
@@ -25,6 +26,7 @@ class MemoryUpdate(BaseModel):
     importance: float | None = Field(None, ge=0.0, le=1.0)
     tags: list[str] | None = None
     status: str | None = None
+    embedding: list[float] | None = None
 
 
 class MemorySearch(BaseModel):
@@ -64,3 +66,4 @@ class SemanticSearchRequest(BaseModel):
     embedding: list[float] = Field(..., description="Vector embedding to search by")
     limit: int = Field(default=10, ge=1, le=100)
     user_id: str | None = None
+    agent_id: str | None = None

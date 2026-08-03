@@ -59,7 +59,9 @@ class MemoryService:
         update_data = data.model_dump(exclude_unset=True, exclude={"id"})
         for key, value in update_data.items():
             setattr(memory, key, value)
-        memory.updated_at = datetime.now(timezone.utc)
+        memory.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)  # 列是naive datetime,
+        # 之前这里直接赋值带时区的datetime,和Memory模型别处一致的写法不符,asyncpg会直接报错——
+        # 说明 /memory/update 这条路径半年来大概率从没被真正调用过
 
         await self.session.flush()
         return memory
@@ -73,6 +75,7 @@ class MemoryService:
         embedding: list[float],
         limit: int = 10,
         user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
         type: Optional[str] = None,
     ) -> list[tuple[Memory, float]]:
         """Return the ``limit`` memories most similar to ``embedding``.
@@ -87,6 +90,8 @@ class MemoryService:
         stmt = select(Memory, distance).where(Memory.embedding.is_not(None))
         if user_id:
             stmt = stmt.where(Memory.user_id == user_id)
+        if agent_id:
+            stmt = stmt.where(Memory.agent_id == agent_id)
         if type:
             stmt = stmt.where(Memory.type == type)
         stmt = stmt.order_by(distance).limit(limit)
