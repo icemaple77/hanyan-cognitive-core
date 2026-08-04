@@ -15,6 +15,24 @@ services:
       - ./gateway:/app/gateway
     command: uvicorn gateway.main:app --host 0.0.0.0 --port 8000 --reload
 
+  mcp:
+    build: .
+    ports:
+      - "8001:8001"
+    environment:
+      - HCC_DATABASE_URL=postgresql+asyncpg://hcc:hcc@db:5432/hcc
+      - HCC_REDIS_URL=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./mcp:/app/mcp
+      - ./core:/app/core
+      - ./gateway:/app/gateway
+    command: python mcp/server.py --transport streamable-http --host 0.0.0.0 --port 8001
+
   redis:
     image: redis:7-alpine
     ports:
