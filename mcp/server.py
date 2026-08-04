@@ -255,6 +255,11 @@ def main() -> None:
     else:
         mcp.settings.host = args.host
         mcp.settings.port = args.port
+        from mcp.server.transport_security import TransportSecuritySettings
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=[f"{args.host}:*"],
+        )
         mcp.run(transport=args.transport)
 
 
