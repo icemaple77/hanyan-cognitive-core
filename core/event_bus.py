@@ -57,6 +57,7 @@ class EventType(str, Enum):
 
     MEMORY_CREATED = "memory.created"
     MEMORY_UPDATED = "memory.updated"
+    MEMORY_DELETED = "memory.deleted"
     KNOWLEDGE_MERGED = "knowledge.merged"
     EMOTION_CHANGED = "emotion.changed"
     DREAM_FINISHED = "dream.finished"
@@ -132,6 +133,13 @@ class MemoryUpdated(Event):
 
 
 @dataclass
+class MemoryDeleted(Event):
+    """Emitted when a Memory is deleted."""
+
+    event_type: EventType = EventType.MEMORY_DELETED
+
+
+@dataclass
 class KnowledgeMerged(Event):
     """Emitted when memories/knowledge fragments are merged."""
 
@@ -155,6 +163,7 @@ class DreamFinished(Event):
 _EVENT_CLASSES: dict[EventType, type[Event]] = {
     EventType.MEMORY_CREATED: MemoryCreated,
     EventType.MEMORY_UPDATED: MemoryUpdated,
+    EventType.MEMORY_DELETED: MemoryDeleted,
     EventType.KNOWLEDGE_MERGED: KnowledgeMerged,
     EventType.EMOTION_CHANGED: EmotionChanged,
     EventType.DREAM_FINISHED: DreamFinished,

@@ -8,6 +8,7 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.database import get_session
+from gateway.core.events import publish_memory_event
 from gateway.models import Memory
 from gateway.schemas.memory import (
     MemoryCreate,
@@ -32,6 +33,7 @@ async def store_memory(
 ) -> MemoryResponse:
     service = MemoryService(session)
     memory = await service.create(data)
+    await publish_memory_event("store", memory.id, user_id=memory.user_id)
     return MemoryResponse.model_validate(memory)
 
 
@@ -57,6 +59,7 @@ async def update_memory(
     memory = await service.update(data)
     if memory is None:
         raise HTTPException(status_code=404, detail="Memory not found")
+    await publish_memory_event("update", memory.id, user_id=memory.user_id)
     return MemoryResponse.model_validate(memory)
 
 
@@ -69,6 +72,7 @@ async def delete_memory(
     success = await service.delete(memory_id)
     if not success:
         raise HTTPException(status_code=404, detail="Memory not found")
+    await publish_memory_event("delete", memory_id)
     return {"status": "ok", "message": "Memory deleted"}
 
 

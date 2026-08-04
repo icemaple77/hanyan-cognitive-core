@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from gateway.core.database import async_session
+from gateway.core.events import publish_memory_event
 from gateway.models import Memory
 from gateway.schemas.memory import MemoryCreate, MemorySearch
 from gateway.services import MemoryService
@@ -98,6 +99,7 @@ async def store_memory(
             service = MemoryService(session)
             memory = await service.create(data)
             await session.commit()
+            await publish_memory_event("store", memory.id, user_id=memory.user_id)
             return _ok(memory=_serialize(memory))
     except Exception as exc:  # noqa: BLE001 - surface any error as structured data
         return _err(f"{exc.__class__.__name__}: {exc}")
@@ -241,6 +243,7 @@ async def delete_memory(memory_id: str) -> dict[str, Any]:
             ok = await service.delete(memory_id)
             await session.commit()
             if ok:
+                await publish_memory_event("delete", memory_id)
                 return _ok(deleted=True, memory_id=memory_id)
             return _err(f"memory not found: {memory_id}")
     except Exception as exc:  # noqa: BLE001
