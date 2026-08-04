@@ -102,3 +102,61 @@ class HybridSearchItem(BaseModel):
 class HybridSearchResponse(BaseModel):
     items: list[HybridSearchItem]
     total: int
+
+
+class DocumentResponse(BaseModel):
+    id: str
+    collection: str
+    path: str
+    title: str
+    content: str
+    content_hash: str
+    mtime: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DocumentSearch(BaseModel):
+    query: str = ""
+    collection: str | None = None
+    limit: int = Field(default=20, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+
+
+class DocumentHybridSearchRequest(BaseModel):
+    query: str = Field(default="", description="Free-text query for BM25 full-text search")
+    embedding: list[float] | None = Field(
+        default=None, description="Optional precomputed vector for the semantic branch (client-computed)"
+    )
+    collection: str | None = None
+    limit: int = Field(default=10, ge=1, le=100)
+    candidate_pool: int = Field(
+        default=50, ge=1, le=200, description="How many results each of BM25/vector contributes before RRF fusion"
+    )
+    rerank: bool = Field(
+        default=False, description="Rerank the fused top results with the optional cross-encoder (HCC_RERANK_ENABLED must also be on)"
+    )
+    snippet_length: int = Field(default=240, ge=40, le=2000)
+
+
+class DocumentHybridSearchItem(BaseModel):
+    document: DocumentResponse
+    snippet: str
+    rrf_score: float
+    bm25_rank: int | None = None
+    bm25_score: float | None = None
+    vector_rank: int | None = None
+    vector_distance: float | None = None
+    rerank_score: float | None = None
+
+
+class DocumentHybridSearchResponse(BaseModel):
+    items: list[DocumentHybridSearchItem]
+    total: int
+
+
+class DocumentListResponse(BaseModel):
+    items: list[DocumentResponse]
+    total: int

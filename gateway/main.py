@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from gateway.api import health, memory_routes, context_routes, graph_routes, emotion_routes, cognitive_routes
+from gateway.api import health, memory_routes, context_routes, graph_routes, emotion_routes, cognitive_routes, document_routes
 from gateway.core.database import engine, Base
 
 
@@ -43,3 +43,4 @@ app.include_router(context_routes.router, prefix="/api/v1", tags=["context"])
 app.include_router(graph_routes.router, prefix="/api/v1", tags=["graph"])
 app.include_router(emotion_routes.router, prefix="/api/v1", tags=["emotion"])
 app.include_router(cognitive_routes.router, prefix="/api/v1", tags=["cognitive"])
+app.include_router(document_routes.router, prefix="/api/v1", tags=["document"])

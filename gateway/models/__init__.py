@@ -1,13 +1,13 @@
-"""Memory SQLAlchemy model."""
+"""Memory + Document SQLAlchemy models."""
 
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Float, DateTime, Text, JSON, Boolean, Integer, Index, event, text
+from sqlalchemy import Column, String, Float, DateTime, Text, JSON, Boolean, Integer, Index, UniqueConstraint, event, text
 from pgvector.sqlalchemy import Vector
 
 from gateway.core.database import Base
-from gateway.core.fts import build_search_text
+from gateway.core.fts import build_search_text, tokenize_for_fts
 
 # Dimensionality of the stored embeddings. 768 matches common sentence-embedding
 # models (e.g. all-mpnet-base-v2, nomic-embed-text). Keep in sync with the value
@@ -54,3 +54,46 @@ class Memory(Base):
 @event.listens_for(Memory, "before_update")
 def _sync_search_text(mapper, connection, target: "Memory") -> None:
     target.search_text = build_search_text(target.content, target.summary, target.tags)
+
+
+class Document(Base):
+    """Indexed markdown document (QMD-replacement doc store).
+
+    One row per source file — collection (e.g. ``second-brain``, ``dev-brain``)
+    plus a path relative to that collection's root. ``content_hash`` (sha256 of
+    the raw file bytes) lets the indexer skip re-embedding/re-tokenizing files
+    that haven't changed since the last run. Search reuses the exact same
+    BM25 (jieba + tsvector) / vector / RRF pipeline as :class:`Memory` — see
+    :mod:`gateway.services.document_service`.
+    """
+
+    __tablename__ = "documents"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    collection = Column(String(64), index=True, nullable=False)
+    path = Column(Text, nullable=False)
+    title = Column(Text, default="")
+    content = Column(Text, nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    # Same jieba-pretokenized blob approach as Memory.search_text — kept in
+    # sync by the before_insert/before_update listener below.
+    search_text = Column(Text, default="", nullable=False, server_default="")
+    embedding = Column(Vector(EMBEDDING_DIM), nullable=True)
+    mtime = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    __table_args__ = (
+        UniqueConstraint("collection", "path", name="uq_documents_collection_path"),
+        Index(
+            "ix_documents_search_text_fts",
+            text("to_tsvector('simple', search_text)"),
+            postgresql_using="gin",
+        ),
+    )
+
+
+@event.listens_for(Document, "before_insert")
+@event.listens_for(Document, "before_update")
+def _sync_document_search_text(mapper, connection, target: "Document") -> None:
+    target.search_text = tokenize_for_fts(f"{target.title or ''}\n{target.content or ''}")
