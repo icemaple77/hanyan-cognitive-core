@@ -19,6 +19,7 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "pyyaml>=6.0",
     "redis>=5.0.0",
+    "jieba>=0.42.1",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +27,12 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "httpx>=0.27.0",
+]
+# Optional cross-encoder reranking for /memory/hybrid-search (HCC_RERANK_ENABLED).
+# Native build (llama.cpp via cmake) — not installed by default, hybrid search's
+# BM25+RRF fusion works fully without it.
+rerank = [
+    "llama-cpp-python>=0.3.0",
 ]
 
 [build-system]

@@ -6,8 +6,45 @@ from typing import Optional
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gateway.core.fts import tokenize_for_fts
+from gateway.core.rerank import RERANK_ENABLED, rerank as rerank_fn
 from gateway.models import Memory
 from gateway.schemas.memory import MemoryCreate, MemoryUpdate, MemorySearch
+
+# Reciprocal Rank Fusion constant. 60 is the value from the original RRF paper
+# (Cormack et al. 2009) and what most hybrid-search implementations (incl.
+# QMD) default to — it's not sensitive to tuning at our scale, so no env knob.
+RRF_K = 60
+
+
+def _reciprocal_rank_fusion(
+    bm25_results: list[tuple[Memory, float]],
+    vector_results: list[tuple[Memory, float]],
+) -> list[dict]:
+    """Merge two ranked result lists by Reciprocal Rank Fusion.
+
+    RRF only looks at *rank position* within each list, not the raw scores —
+    which sidesteps the "BM25 scores and cosine distances live on
+    incomparable scales" problem entirely. score(doc) = sum over lists
+    containing doc of 1/(k + rank), 1-indexed rank. Returns items sorted by
+    descending fused score, each a dict carrying provenance from whichever
+    branch(es) matched.
+    """
+    by_id: dict[str, dict] = {}
+
+    for rank, (memory, score) in enumerate(bm25_results, start=1):
+        entry = by_id.setdefault(memory.id, {"memory": memory, "rrf_score": 0.0})
+        entry["rrf_score"] += 1.0 / (RRF_K + rank)
+        entry["bm25_rank"] = rank
+        entry["bm25_score"] = score
+
+    for rank, (memory, distance) in enumerate(vector_results, start=1):
+        entry = by_id.setdefault(memory.id, {"memory": memory, "rrf_score": 0.0})
+        entry["rrf_score"] += 1.0 / (RRF_K + rank)
+        entry["vector_rank"] = rank
+        entry["vector_distance"] = distance
+
+    return sorted(by_id.values(), key=lambda item: item["rrf_score"], reverse=True)
 
 
 class MemoryService:
@@ -98,6 +135,103 @@ class MemoryService:
 
         result = await self.session.execute(stmt)
         return [(memory, float(dist)) for memory, dist in result.all()]
+
+    async def keyword_search_bm25(
+        self,
+        query: str,
+        limit: int = 20,
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        type: Optional[str] = None,
+    ) -> list[tuple[Memory, float]]:
+        """BM25-style full-text search via Postgres ``ts_rank_cd``.
+
+        ``query`` is tokenized the same way ``search_text`` was at write time
+        (see :mod:`gateway.core.fts`) so both sides of ``@@`` line up for
+        mixed zh/en content. Returns memories ordered by descending rank
+        alongside their raw rank score. Empty/unmatched queries return ``[]``
+        rather than falling back to a full scan.
+        """
+        tokens = tokenize_for_fts(query)
+        if not tokens:
+            return []
+
+        # plainto_tsquery (not websearch_to_tsquery): tokens are already
+        # segmented by us, and plainto_tsquery has no special operator syntax
+        # (quotes/OR/-) to misinterpret if a jieba token happens to start
+        # with a character like '-'. It just ANDs every token together.
+        tsvector_expr = func.to_tsvector("simple", Memory.search_text)
+        tsquery_expr = func.plainto_tsquery("simple", tokens)
+        rank = func.ts_rank_cd(tsvector_expr, tsquery_expr).label("rank")
+
+        stmt = select(Memory, rank).where(tsvector_expr.op("@@")(tsquery_expr))
+        if user_id:
+            stmt = stmt.where(Memory.user_id == user_id)
+        if agent_id:
+            stmt = stmt.where(Memory.agent_id == agent_id)
+        if type:
+            stmt = stmt.where(Memory.type == type)
+        stmt = stmt.order_by(rank.desc()).limit(limit)
+
+        result = await self.session.execute(stmt)
+        return [(memory, float(r)) for memory, r in result.all()]
+
+    async def hybrid_search(
+        self,
+        query: str = "",
+        embedding: Optional[list[float]] = None,
+        limit: int = 10,
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        type: Optional[str] = None,
+        candidate_pool: int = 50,
+        rerank: bool = False,
+    ) -> list[dict]:
+        """BM25 + vector hybrid search, fused with Reciprocal Rank Fusion.
+
+        Either ``query`` or ``embedding`` (or both) may be supplied — a
+        branch is simply skipped if its input is missing, so this degrades
+        gracefully to pure-vector or pure-BM25 search rather than erroring.
+        ``candidate_pool`` controls how many results each branch contributes
+        before fusion (wider than ``limit`` so RRF has enough to work with).
+        ``rerank=True`` runs the fused top-``candidate_pool`` through the
+        optional cross-encoder (see :mod:`gateway.core.rerank`) — but only if
+        the server also has ``HCC_RERANK_ENABLED=true``; that env var is the
+        ops-level kill switch (don't load a 600MB model / spend the per-query
+        latency unless the deployment opted in), while this parameter is the
+        per-request ask. Either one off means RRF order is kept as-is; if the
+        reranker is enabled but fails to load/score, that also silently falls
+        back to RRF order rather than erroring the request.
+
+        Returns a list of dicts (not ORM tuples) since each result carries
+        provenance beyond the plain :class:`Memory` row: ``memory``,
+        ``rrf_score``, ``bm25_rank``/``bm25_score``, ``vector_rank``/
+        ``vector_distance``, and (if reranked) ``rerank_score``.
+        """
+        bm25_results: list[tuple[Memory, float]] = []
+        vector_results: list[tuple[Memory, float]] = []
+
+        if query:
+            bm25_results = await self.keyword_search_bm25(
+                query, limit=candidate_pool, user_id=user_id, agent_id=agent_id, type=type
+            )
+        if embedding:
+            vector_results = await self.semantic_search(
+                embedding, limit=candidate_pool, user_id=user_id, agent_id=agent_id, type=type
+            )
+
+        fused = _reciprocal_rank_fusion(bm25_results, vector_results)
+        do_rerank = rerank and RERANK_ENABLED
+        top = fused[: max(limit, candidate_pool) if do_rerank else limit]
+
+        if do_rerank and top:
+            scores = await rerank_fn(query or "", [item["memory"].content for item in top])
+            if scores is not None:
+                for item, score in zip(top, scores):
+                    item["rerank_score"] = score
+                top.sort(key=lambda item: item["rerank_score"], reverse=True)
+
+        return top[:limit]
 
     async def get_recent(self, limit: int = 20, offset: int = 0) -> tuple[list[Memory], int]:
         stmt = select(Memory).order_by(Memory.created_at.desc()).offset(offset).limit(limit)

@@ -161,6 +161,44 @@ async def semantic_search(
 
 
 @mcp.tool()
+async def hybrid_search(
+    query: str = "",
+    embedding: list[float] | None = None,
+    user_id: str | None = None,
+    agent_id: str | None = None,
+    type: str | None = None,
+    limit: int = 10,
+    rerank: bool = False,
+) -> dict:
+    """Hybrid search: BM25 full-text + vector similarity, fused with Reciprocal Rank Fusion.
+
+    Best default choice for "find memories about X" — combines exact keyword
+    matches (BM25, no embedding needed) with semantic similarity (if you pass
+    an embedding), so it doesn't miss relevant memories that use different
+    words than the query. Provide at least one of query/embedding; providing
+    only one degrades gracefully to pure-BM25 or pure-vector search.
+
+    Args:
+        query: Free-text query for the BM25 branch (jieba-segmented server-side,
+            works for mixed Chinese/English content). Optional.
+        embedding: Precomputed query embedding (1024-dim, Qwen3-Embedding-0.6B)
+            for the vector branch. Optional.
+        user_id: Restrict to a specific user.
+        agent_id: Restrict to a specific agent's memories.
+        type: Restrict to a specific memory type.
+        limit: Max number of results (1-100). Defaults to 10.
+        rerank: Rerank the fused top results with the optional cross-encoder
+            (Qwen3-Reranker-0.6B). Off by default — adds latency; silently
+            falls back to RRF order if the reranker isn't enabled/available
+            server-side (HCC_RERANK_ENABLED).
+    """
+    return await memory_tools.hybrid_search(
+        query=query, embedding=embedding, user_id=user_id, agent_id=agent_id,
+        type=type, limit=limit, rerank=rerank,
+    )
+
+
+@mcp.tool()
 async def get_recent_memories(
     limit: int = 20,
     user_id: str | None = None,

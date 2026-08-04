@@ -7,6 +7,9 @@ from gateway.schemas.__init__ import (
     MemoryResponse,
     MemoryListResponse,
     SemanticSearchRequest,
+    HybridSearchRequest,
+    HybridSearchItem,
+    HybridSearchResponse,
 )
 
 __all__ = [
@@ -16,4 +19,7 @@ __all__ = [
     "MemoryResponse",
     "MemoryListResponse",
     "SemanticSearchRequest",
+    "HybridSearchRequest",
+    "HybridSearchItem",
+    "HybridSearchResponse",
 ]

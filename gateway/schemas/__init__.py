@@ -70,3 +70,35 @@ class SemanticSearchRequest(BaseModel):
     user_id: str | None = None
     agent_id: str | None = None
     type: str | None = None
+
+
+class HybridSearchRequest(BaseModel):
+    query: str = Field(default="", description="Free-text query for BM25 full-text search")
+    embedding: list[float] | None = Field(
+        default=None, description="Optional precomputed vector for the semantic branch; client-computed, same as /memory/semantic-search"
+    )
+    limit: int = Field(default=10, ge=1, le=100)
+    user_id: str | None = None
+    agent_id: str | None = None
+    type: str | None = None
+    candidate_pool: int = Field(
+        default=50, ge=1, le=200, description="How many results each of BM25/vector contributes before RRF fusion"
+    )
+    rerank: bool = Field(
+        default=False, description="Rerank the fused top results with the optional cross-encoder (HCC_RERANK_ENABLED must also be on; silently falls back to RRF order if unavailable)"
+    )
+
+
+class HybridSearchItem(BaseModel):
+    memory: MemoryResponse
+    rrf_score: float
+    bm25_rank: int | None = None
+    bm25_score: float | None = None
+    vector_rank: int | None = None
+    vector_distance: float | None = None
+    rerank_score: float | None = None
+
+
+class HybridSearchResponse(BaseModel):
+    items: list[HybridSearchItem]
+    total: int

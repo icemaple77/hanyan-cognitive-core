@@ -16,6 +16,9 @@ from gateway.schemas.memory import (
     MemorySearch,
     MemoryListResponse,
     SemanticSearchRequest,
+    HybridSearchRequest,
+    HybridSearchItem,
+    HybridSearchResponse,
 )
 from gateway.services import MemoryService
 
@@ -122,3 +125,40 @@ async def semantic_search_memories(
         items=[MemoryResponse.model_validate(m) for m, _ in results],
         total=len(results),
     )
+
+
+@router.post("/memory/hybrid-search", response_model=HybridSearchResponse)
+async def hybrid_search_memories(
+    query: HybridSearchRequest,
+    session: AsyncSession = Depends(get_session),
+) -> HybridSearchResponse:
+    """BM25 + vector hybrid search (QMD-style), fused with RRF.
+
+    Existing /memory/search (keyword ILIKE) and /memory/semantic-search
+    (pure vector) endpoints are unchanged — this is additive, not a
+    replacement, so existing clients keep working untouched.
+    """
+    service = MemoryService(session)
+    results = await service.hybrid_search(
+        query=query.query,
+        embedding=query.embedding,
+        limit=query.limit,
+        user_id=query.user_id,
+        agent_id=query.agent_id,
+        type=query.type,
+        candidate_pool=query.candidate_pool,
+        rerank=query.rerank,
+    )
+    items = [
+        HybridSearchItem(
+            memory=MemoryResponse.model_validate(item["memory"]),
+            rrf_score=item["rrf_score"],
+            bm25_rank=item.get("bm25_rank"),
+            bm25_score=item.get("bm25_score"),
+            vector_rank=item.get("vector_rank"),
+            vector_distance=item.get("vector_distance"),
+            rerank_score=item.get("rerank_score"),
+        )
+        for item in results
+    ]
+    return HybridSearchResponse(items=items, total=len(items))

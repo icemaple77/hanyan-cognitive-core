@@ -34,6 +34,7 @@ __all__ = [
     "search_memories",
     "recall",
     "semantic_search",
+    "hybrid_search",
     "get_recent_memories",
     "delete_memory",
     "evaluate",
@@ -174,6 +175,40 @@ async def semantic_search(
                 item["distance"] = float(dist)
                 item["score"] = round(1.0 - float(dist) / 2.0, 6)
                 items.append(item)
+            return _ok(count=len(items), results=items)
+    except Exception as exc:  # noqa: BLE001
+        return _err(f"{exc.__class__.__name__}: {exc}")
+
+
+async def hybrid_search(
+    query: str = "",
+    embedding: Optional[list[float]] = None,
+    user_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    type: Optional[str] = None,
+    limit: int = 10,
+    rerank: bool = False,
+) -> dict[str, Any]:
+    """BM25 全文 + 向量(RRF融合)混合检索。embedding 可选(不传就退化成纯 BM25);
+    query 也可选(不传就退化成纯向量)。至少给一个。"""
+    try:
+        if not query and not embedding:
+            return _err("must provide at least one of query or embedding")
+        limit = max(1, min(100, int(limit)))
+        async with async_session() as session:
+            service = MemoryService(session)
+            results = await service.hybrid_search(
+                query=query, embedding=embedding, limit=limit,
+                user_id=user_id, agent_id=agent_id, type=type, rerank=rerank,
+            )
+            items = []
+            for item in results:
+                serialized = _serialize(item["memory"])
+                serialized["rrf_score"] = item["rrf_score"]
+                serialized["bm25_rank"] = item.get("bm25_rank")
+                serialized["vector_rank"] = item.get("vector_rank")
+                serialized["rerank_score"] = item.get("rerank_score")
+                items.append(serialized)
             return _ok(count=len(items), results=items)
     except Exception as exc:  # noqa: BLE001
         return _err(f"{exc.__class__.__name__}: {exc}")
