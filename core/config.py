@@ -114,6 +114,75 @@ class CoreSettings(BaseSettings):
             "(HCC_SYNC_GIT_ENABLED). Independent of HCC_QMD_GIT_ENABLED."
         ),
     )
+    sync_auto_enabled: bool = Field(
+        default=True,
+        description=(
+            "Master switch for the gateway's built-in sync automation: the "
+            "periodic sync_interval loop and the debounced store/update/delete "
+            "event-triggered sync (HCC_SYNC_AUTO_ENABLED)."
+        ),
+    )
+
+    # --- Dream engine (native three-phase consolidation, v2) ------------
+    dream_auto_enabled: bool = Field(
+        default=True,
+        description="Master switch for the three background dream loops "
+        "(HCC_DREAM_AUTO_ENABLED). Independent of HCC_SYNC_AUTO_ENABLED.",
+    )
+    dream_light_interval_hours: int = Field(
+        default=6, ge=1, description="Hours between Light-phase runs (HCC_DREAM_LIGHT_INTERVAL_HOURS)."
+    )
+    dream_light_lookback_hours: int = Field(
+        default=6, ge=1, description="Light phase scans Memory rows created within this many hours."
+    )
+    dream_rem_hour: int = Field(default=2, ge=0, le=23, description="REM phase daily trigger hour (local time).")
+    dream_rem_minute: int = Field(default=30, ge=0, le=59, description="REM phase daily trigger minute.")
+    dream_deep_hour: int = Field(default=3, ge=0, le=23, description="Deep phase daily trigger hour (local time).")
+    dream_deep_minute: int = Field(default=0, ge=0, le=59, description="Deep phase daily trigger minute.")
+    dream_rem_lookback_days: int = Field(default=7, ge=1, description="REM phase clustering window in days.")
+    dream_rem_min_cluster_size: int = Field(
+        default=3, ge=2, description="Minimum members for a REM tag-overlap cluster to count as a theme."
+    )
+    dream_min_score: float = Field(
+        default=0.7, ge=0.0, description="Deep phase promotion score threshold (Phase-1 5-signal formula)."
+    )
+    dream_min_access_count: int = Field(default=3, ge=0, description="Deep phase minimum access_count to be eligible.")
+    dream_max_age_days: int = Field(default=30, ge=1, description="Deep phase maximum memory age (days) to be eligible.")
+    dream_recency_halflife_days: float = Field(
+        default=14.0, gt=0, description="Half-life (days) for the recency component and the phase-boost decay."
+    )
+    dream_limit: int = Field(default=10, ge=1, description="Max memories promoted per Deep run.")
+    dream_max_prior_loss_fraction: float = Field(
+        default=0.25,
+        ge=0.0,
+        le=1.0,
+        description="Safety valve: skip updating an existing knowledge memory if the new cluster "
+        "covers less than (1 - this) of its previously recorded source memories.",
+    )
+    dream_diary_dir: Path = Field(
+        default=Path("~/workspace/AICore/Dreams"),
+        description="Dual dream-diary output directory: 含烟梦境.md (narrative) + 深梦报告.md (audit) "
+        "(HCC_DREAM_DIARY_DIR).",
+    )
+
+    # --- Obsidian vault: archive + per-agent export + browse API -------
+    archive_dir: Path = Field(
+        default=Path("~/workspace/AICore-Archive"),
+        description="External (indexer-excluded) home for orphaned QMD documents — "
+        "memories deleted/unshared since the last generation are moved here instead "
+        "of left stale under HCC_QMD_DIR (HCC_ARCHIVE_DIR).",
+    )
+    agent_export_dir: Path = Field(
+        default=Path("~/workspace/AICore/agents"),
+        description="Root for the per-agent_id human-readable memory export "
+        "(<dir>/<agent_id>/*.md), independent of QMDGenerator's shared=True filter "
+        "(HCC_AGENT_EXPORT_DIR).",
+    )
+    vault_root: Path = Field(
+        default=Path("~/workspace/AICore"),
+        description="Obsidian vault root exposed read-only via GET /vault/list and "
+        "/vault/read (HCC_VAULT_ROOT). Path traversal outside this root is rejected.",
+    )
 
     def ttl_for(self, category: str) -> int:
         """Return the default TTL (seconds) for a working-memory ``category``.

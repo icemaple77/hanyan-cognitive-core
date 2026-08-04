@@ -11,9 +11,15 @@ from their collection.
 Run from the repo root (so ``gateway.core.config`` picks up ``.env``) with the
 project venv active::
 
-    python scripts/index_documents.py
+    python scripts/index_documents.py                       # full AICore vault (default)
     python scripts/index_documents.py --collection second-brain --root ~/workspace/AICore/含烟记忆系统
     python scripts/index_documents.py --embed   # also compute embeddings (see caveat below)
+
+Default root is the whole AICore vault (``~/workspace/AICore``), not just the
+含烟记忆系统 subtree — see docs/dreaming-design.md-adjacent Obsidian export
+notes. ``EXCLUDE_DIRS`` keeps Archive/backup/Obsidian-internal directories out
+of the index (physically-external archive material and full-vault backups
+have no business being retrieval candidates).
 
 Embeddings are OFF by default. HCC has no real embedding model available
 server-side (see ``mcp/memory_tools.py`` for why) — ``gateway.core.embeddings``
@@ -44,15 +50,27 @@ from gateway.services.document_service import DocumentService  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("hcc.index_documents")
 
-EXCLUDE_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".obsidian", "dist-info"}
+EXCLUDE_DIRS = {
+    ".git", "node_modules", "__pycache__", ".venv", ".obsidian", "dist-info",
+    # Archive / backup material: physically or logically excluded from the
+    # index on purpose (see docs on Obsidian export — Archive is meant to be
+    # invisible to the indexer, not just low-priority).
+    "Archive", "归档", "完整备份", "AICore-Archive",
+    # core/agent_export.py dumps every active Memory (all types, incl. noisy
+    # tool_result/exec logs) as one file per row — thousands of tiny files.
+    # That content is already searchable natively via /memory/search and
+    # /memory/hybrid-search; re-indexing it into `documents` would duplicate
+    # it and drown out the curated collections with low-value noise. The
+    # agents/ tree is meant for browsing (see gateway/api/vault_routes.py),
+    # not document search.
+    "agents",
+}
 
 DEFAULT_COLLECTIONS = {
-    "second-brain": "~/workspace/AICore/含烟记忆系统",
-    # QMD's own dev-brain collection points at ~/projects/dev-vault, which
-    # doesn't exist on disk (0 files indexed there per `qmd status`) — the
-    # real vault lives here, so HCC indexes the actual content instead of
-    # replicating the stale QMD config.
-    "dev-brain": "~/workspace/projects/dev-vault",
+    # Full AICore vault scan (156 md as of 2026-08-05) — the previous default
+    # only covered the 含烟记忆系统 subtree, silently skipping Tasks/,
+    # reports/, 日常流程/ and anything else at the vault root.
+    "aicore": "~/workspace/AICore",
 }
 
 

@@ -97,3 +97,47 @@ class Document(Base):
 @event.listens_for(Document, "before_update")
 def _sync_document_search_text(mapper, connection, target: "Document") -> None:
     target.search_text = tokenize_for_fts(f"{target.title or ''}\n{target.content or ''}")
+
+
+class DreamSignal(Base):
+    """Light/REM phase hits — auxiliary boost record, never touches Memory.
+
+    See docs/dreaming-design.md 2.3. The (memory_id, phase, day) unique index
+    is the idempotency mechanism: re-running Light/REM within the same day for
+    a memory that already has a signal is a no-op at the DB layer, not just an
+    application-level check.
+    """
+
+    __tablename__ = "dream_signals"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    memory_id = Column(String(36), nullable=False, index=True)
+    phase = Column(String(16), nullable=False)  # light | rem
+    boost = Column(Float, nullable=False)
+    cluster_tag = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "uq_dream_signals_memory_phase_day",
+            "memory_id",
+            "phase",
+            text("DATE(created_at)"),
+            unique=True,
+        ),
+    )
+
+
+class DreamRun(Base):
+    """Audit record for one Light/REM/Deep pass — feeds /dream/status and the
+    "did we already run today" idempotency guard that fixes the double-write
+    ("今夜无梦" x3) bug (see docs/dreaming-design.md 零 + 2.6)."""
+
+    __tablename__ = "dream_runs"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    phase = Column(String(16), nullable=False)  # light | rem | deep
+    started_at = Column(DateTime, nullable=False)
+    finished_at = Column(DateTime, nullable=True)
+    stats = Column(JSON, nullable=False, default=dict)
+    narrative_path = Column(Text, nullable=True)
