@@ -22,7 +22,11 @@ Usage::
 
     python scripts/sync_openclaw_memory.py --dry-run
     python scripts/sync_openclaw_memory.py
-    python scripts/sync_openclaw_memory.py --db /path/to/openclaw-agent.sqlite --hcc-url http://REDACTED-IP:8000
+    python scripts/sync_openclaw_memory.py --db /path/to/openclaw-agent.sqlite --hcc-url http://your-hcc-host:8000
+
+The sqlite path and HCC gateway URL default to ``~/.openclaw/agents/main/agent/openclaw-agent.sqlite``
+and ``http://localhost:8000``; override via ``HCC_OPENCLAW_DB`` / ``HCC_URL``
+environment variables or ``--db`` / ``--hcc-url``.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import logging
+import os
 import sqlite3
 import sys
 import time
@@ -40,10 +45,13 @@ import requests
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("hcc.sync_openclaw_memory")
 
-DEFAULT_DB = "/home/michael/.openclaw/agents/main/agent/openclaw-agent.sqlite"
-DEFAULT_HCC_URL = "http://REDACTED-IP:8000"
+DEFAULT_DB = os.environ.get(
+    "HCC_OPENCLAW_DB",
+    os.path.expanduser("~/.openclaw/agents/main/agent/openclaw-agent.sqlite"),
+)
+DEFAULT_HCC_URL = os.environ.get("HCC_URL", "http://localhost:8000")
 DEFAULT_AGENT_ID = "openclaw"
-DEFAULT_USER_ID = "michael"
+DEFAULT_USER_ID = os.environ.get("HCC_USER_ID", "default")
 SYNC_SOURCE = "openclaw_sync"
 
 # Pure reference/documentation dumps indexed by qmd alongside real memory —

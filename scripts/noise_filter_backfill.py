@@ -24,7 +24,10 @@ Usage::
 
     env -u PYTHONPATH python3 scripts/noise_filter_backfill.py --dry-run
     env -u PYTHONPATH python3 scripts/noise_filter_backfill.py
-    env -u PYTHONPATH python3 scripts/noise_filter_backfill.py --hcc-url http://REDACTED-IP:8000 --concurrency 4
+    env -u PYTHONPATH HCC_URL=http://your-hcc-host:8000 python3 scripts/noise_filter_backfill.py --concurrency 4
+
+The HCC gateway base URL defaults to ``http://localhost:8000``; override via
+the ``HCC_URL`` environment variable or ``--hcc-url``.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from collections import Counter
 from pathlib import Path
@@ -45,7 +49,7 @@ from core.local_filter import NOISE_FILTER_TAG, evaluate
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("hcc.noise_filter_backfill")
 
-DEFAULT_HCC_URL = "http://REDACTED-IP:8000"
+DEFAULT_HCC_URL = os.environ.get("HCC_URL", "http://localhost:8000")
 DEFAULT_TYPE = "tool_result"
 DEFAULT_PAGE_SIZE = 50
 

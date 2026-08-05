@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CLI wrapper for :mod:`core.agent_export` — run from cron or by hand.
 
-    cd /home/user/workspace/projects/HCC
+    cd /path/to/HCC
     set -a; source .env; set +a
     .venv/bin/python scripts/export_agent_memories.py
 

@@ -5,7 +5,7 @@
 #   pg_restore -h localhost -U hcc -d hcc --clean --if-exists <file>
 set -euo pipefail
 
-BACKUP_DIR="/home/user/backups/hcc"
+BACKUP_DIR="${HCC_BACKUP_DIR:-$HOME/backups/hcc}"
 FILE="hcc-$(date +%Y%m%d-%H%M).sql.gz"
 LOG="$BACKUP_DIR/backup.log"
 RETAIN=14
@@ -14,7 +14,7 @@ mkdir -p "$BACKUP_DIR"
 
 {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] starting backup -> $FILE"
-  PGPASSWORD=hcc /opt/homebrew/bin/pg_dump -h localhost -U hcc -d hcc -Fc | gzip > "$BACKUP_DIR/$FILE"
+  PGPASSWORD=hcc pg_dump -h localhost -U hcc -d hcc -Fc | gzip > "$BACKUP_DIR/$FILE"
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] backup complete: $(ls -la "$BACKUP_DIR/$FILE" | awk '{print $5}') bytes"
 
   cd "$BACKUP_DIR"
