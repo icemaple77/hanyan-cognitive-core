@@ -1,243 +1,287 @@
-# Hanyan Cognitive Core (HCC)
+# HCC — Hanyan Cognitive Core（含烟认知核心）
 
-Memory Operating System for AI Agents
-认知操作系统 — 记忆/知识/情绪/梦境/人格 统一管理中心
+**跨 Agent 统一记忆层**：一个独立部署的 REST 服务，把记忆存储、混合检索、知识图谱、情绪状态、梦境式记忆巩固、Obsidian 双向同步统一收拢在一个数据库和一套 API 之后，供 Hermes、OpenClaw、Claude Code 等任意 Agent 通过 HTTP 接入。
+
+HCC 不是某个 Agent 框架的内置记忆插件，而是一个**独立于任何具体 Agent 运行时**的认知操作系统：Agent 只需要会发 HTTP 请求，就能获得持久记忆、语义检索、情绪连续性和夜间自动整理。
 
 ---
 
-## 项目定位
+## 架构
 
-HCC 不是一个 Memory Provider，而是一个 **Workspace Governor（工作区管理器）**。
-
-它接管 AI Agent（OpenClaw、Hermes、Claude Code、Cursor 等）的 Workspace 生命周期：
-Agent 写 Markdown → Scanner 吸收 → PostgreSQL 存储 → Optimizer 清场 → 重写引导文件
-
-## 环境
-
-| 项目 | 值 |
-|:-----|:----|
-| 源码 | `~/workspace/projects/HCC/` |
-| 运行位置 | **aicore N100**（Docker，局域网 LAN_HOST，Tailscale TAILSCALE_PEER_HOST） |
-| 开发位置 | **Mac Mini M4**（源码编辑 + git） |
-| PostgreSQL 数据 | Docker volume `hcc_pgdata`（~47MB） |
-| Python | 3.11（项目内 uv 管理） |
-
-## 启动/停止
-
-```bash
-# 部署：本地提交 → scp → aicore Docker
-cd ~/workspace/projects/HCC
-tar czf /tmp/hcc.tar.gz --exclude=.git --exclude=__pycache__ --exclude=.venv .
-scp /tmp/hcc.tar.gz aicore:/tmp/
-ssh aicore 'rm -rf /home/michael/projects/HCC && mkdir -p /home/michael/projects/HCC && cd /home/michael/projects/HCC && tar xzf /tmp/hcc.tar.gz && docker compose up -d'
-
-# 启动（aicore）
-docker compose up -d
-
-# 停止（aicore）
-docker compose down
-
-# 重启单服务
-docker compose restart api
+```
+                         ┌─────────────────────────────┐
+                         │        Agent 层               │
+                         │  Hermes / OpenClaw / Claude   │
+                         │  Code / 任意会发 HTTP 的 Agent   │
+                         └───────────────┬───────────────┘
+                                         │ REST / SSE
+                         ┌───────────────▼───────────────┐
+                         │      Gateway API（FastAPI）     │
+                         │   /api/v1/* ，统一入口 + 路由     │
+                         └───┬─────┬─────┬─────┬─────┬────┘
+                             │     │     │     │     │
+              ┌──────────────┘     │     │     │     └──────────────┐
+              ▼                    ▼     ▼     ▼                    ▼
+        ┌───────────┐   ┌──────────┐ ┌──────┐ ┌────────────┐ ┌───────────┐
+        │  Memory   │   │  Dream   │ │Emotion│ │  EventBus  │ │    MCP    │
+        │ 混合检索/CRUD │   │三阶段巩固  │ │6维状态机│ │ Redis Pub/Sub│ │ stdio 协议 │
+        └─────┬─────┘   └────┬─────┘ └──┬───┘ └──────┬─────┘ └───────────┘
+              │              │          │            │
+              └──────┬───────┴──────────┴────────────┘
+                     ▼
+         ┌───────────────────────┐        ┌─────────────────────┐
+         │   PostgreSQL 17        │        │   本地降噪（可选）      │
+         │   + pgvector           │◄───────┤ Ollama qwen3.5 异步复核│
+         └───────────┬───────────┘        └─────────────────────┘
+                     │
+                     ▼ Sync Engine（双向）
+         ┌───────────────────────┐
+         │  Obsidian Vault         │
+         │  QMD 知识文档 / 梦境日记 /  │
+         │  per-agent 导出 / vault API │
+         └───────────────────────┘
 ```
 
-## 验证
+- **Gateway API**：FastAPI 单入口，所有模块通过 `/api/v1/*` 暴露，CORS 开放
+- **Memory**：记忆 CRUD + 三种检索模式（关键词 / 向量 / 混合 BM25+向量+RRF）
+- **Dream**：夜间三阶段记忆巩固（Light 聚合 → REM 聚类 → Deep 去重生成知识），带 Obsidian 梦境日记
+- **Emotion**：6 维度情绪引擎（happiness/curiosity/fatigue/worry/closeness/focus）+ 具名状态机，随对话/记忆/梦境事件演化
+- **EventBus**：Redis Pub/Sub（可选，未启用时退化为进程内内存广播），驱动情绪联动、降噪复核、SSE 推送
+- **Sync**：PostgreSQL ↔ Markdown 双向同步引擎，定时 + 事件触发
+- **Obsidian**：QMD 知识文档生成、per-agent 记忆导出、只读 vault 浏览 API、梦境日记写入
+- **本地降噪**：异步订阅记忆写入事件，用本地 Ollama 模型复核低置信度记忆（`tool_result`/插件写入），软删除噪音，不阻塞主写入路径
+- **MCP**：stdio 协议 server，把核心记忆工具暴露给支持 MCP 的客户端（Claude Code 等）
+
+---
+
+## 功能特性
+
+- **混合检索**：BM25（PostgreSQL 全文 + jieba 中文分词）+ pgvector 向量检索，RRF（Reciprocal Rank Fusion）融合排序，可选 Qwen3 交叉编码器重排（`HCC_RERANK_ENABLED`）
+- **本地模型降噪**：低置信度记忆（工具调用结果、第三方插件写入）异步过 Ollama `qwen3.5:4b` 复核，噪音软删除（`status=discarded`），从不阻塞写入、从不硬删除
+- **梦境三阶段**：Light（短周期聚合）→ REM（跨天标签聚类找主题）→ Deep（去重生成知识 + 写入 Memory + 梦境日记），全部幂等（每天每阶段只跑一次，`force` 可强制重跑）
+- **情绪 6 维状态机**：happiness / curiosity / fatigue / worry / closeness / focus 连续维度 + 具名复合状态（如"雀跃"/"低落"），检索结果按情绪心境一致性加权，梦境 Deep 阶段可反向调整情绪基线
+- **Obsidian 双向导出**：知识文档（QMD）自动生成、per-agent 人类可读记忆导出、梦境日记（叙事 + 审计报告双文件）、孤儿文档自动归档
+- **只读 vault API**：`/vault/list` / `/vault/read`，路径严格限制在 `HCC_VAULT_ROOT` 内（拒绝 `..`、拒绝逃逸的软链、拒绝绝对路径）
+- **SSE 多端感知**：`/events/stream` 推送记忆变更事件（store/update/delete），供旁路监听器、多客户端保持状态同步
+- **Redis EventBus**：可选，未配置时优雅降级为进程内内存事件总线，模块间零耦合
+
+---
+
+## 快速开始
+
+### 依赖
+
+- Python 3.11+
+- PostgreSQL 17 + [pgvector](https://github.com/pgvector/pgvector) 扩展
+- Redis（可选，未启用时事件总线退化为进程内内存广播）
+- Ollama（可选，本地降噪 / 本地 embedding 需要；不装也能跑，`HCC_EMBEDDING_PROVIDER=hash` 走零依赖哈希 embedding）
+
+### 安装
 
 ```bash
-# 健康检查
-curl http://aicore:8000/api/v1/health
+git clone https://github.com/icemaple77/hanyan-cognitive-core.git
+cd hanyan-cognitive-core
+
+# 用 uv（推荐，仓库自带 uv.lock）
+uv sync
+
+# 或用 pip
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+### 配置
+
+```bash
+cp .env.example .env
+# 至少确认 HCC_DATABASE_URL 指向可用的 PostgreSQL 实例
+```
+
+关键环境变量（完整列表见 `.env.example`，以及 `gateway/core/config.py` / `core/config.py` 里每项的详细说明）：
+
+| 变量 | 说明 |
+|:-----|:-----|
+| `HCC_DATABASE_URL` | PostgreSQL 连接串（必需） |
+| `HCC_QMD_DIR` | Obsidian 知识文档输出目录 |
+| `HCC_REDIS_ENABLED` | Redis EventBus 开关，默认 `false`（进程内内存广播） |
+| `HCC_NOISE_FILTER_ENABLED` | 本地降噪开关，默认 `true`（需要本地 Ollama） |
+| `HCC_RERANK_ENABLED` | 混合检索交叉编码器重排开关，默认 `false` |
+| `HCC_VAULT_ROOT` | Obsidian vault 根目录，供 `/vault/*` API 和梦境日记使用 |
+
+### 启动数据库（Docker，可选）
+
+```bash
+docker compose up -d db redis   # 仅启动依赖，不用容器跑 HCC 本体
+```
+
+也可以直接用本机已有的 PostgreSQL/Redis，只要在 `.env` 里指对连接串即可——本地开发无需 Docker。
+
+### 启动 HCC
+
+```bash
+uv run uvicorn gateway.main:app --reload --host 0.0.0.0 --port 8000
+# 或用 Makefile
+make dev
+```
+
+首次启动会自动建表（SQLAlchemy metadata create_all）并起 3 个梦境后台循环 + 同步循环（受 `HCC_DREAM_AUTO_ENABLED` / `HCC_SYNC_AUTO_ENABLED` 控制）。
+
+### 健康检查
+
+```bash
+curl http://localhost:8000/api/v1/health
 # → {"status":"ok","version":"0.1.0","service":"hanyan-cognitive-core"}
+```
 
-# Context API（单入口）
-curl -X POST http://aicore:8000/api/v1/context \
-  -H "Content-Type: application/json" \
-  -d '{"query":"BEES部署","user_id":"michael","agent_id":"main","include_emotion":true}'
+### 容器化部署（可选）
+
+仓库提供 `Dockerfile` + `docker-compose.yml`（api + mcp + db + redis 四个服务），适合部署到常驻服务器：
+
+```bash
+docker compose up -d
 ```
 
 ---
 
-## 模块清单（76/76 完成）
+## API 端点
 
-### Stage 1-10（核心功能）
-
-| Stage | 模块 | 文件 | 说明 |
-|:-----:|:-----|:-----|:------|
-| 1 | **Gateway** | `gateway/` | FastAPI，16 个端点 |
-| 2 | **Memory** | `gateway/services/` | CRUD + 语义搜索 |
-| 3 | **Scanner** | `scanner/` | 文件系统扫描吸收 |
-| 4 | **Markdown Sync** | `core/sync_engine.py` | PostgreSQL ↔ Markdown 双向同步 |
-| 5 | **Embedding** | `gateway/core/embeddings.py` | hash/ollama/ST 三后端 |
-| 6 | **Knowledge Graph** | `core/graph.py` | Entity/Relation 模型 |
-| 7 | **Emotion** | `core/emotion.py` | 6 维度情绪引擎 |
-| 8 | **Dream** | `core/dream.py` | 聚类/去重/知识生成 |
-| 9 | **Planner** | `core/query_planner.py` | 查询分类 + 自动编排 |
-| 10 | **Plugin SDK** | `core/providers/` | Provider 接口 + Memory/Knowledge Provider |
-
-### v2 架构增强
-
-| 模块 | 文件 | 说明 |
-|:-----|:-----|:------|
-| Redis Working Memory | `core/redis_manager.py` | TTL 自动过期 |
-| EventBus | `core/event_bus.py` | Redis Pub/Sub |
-| QMDGenerator | `core/qmd_generator.py` | PostgreSQL → Markdown |
-| SyncEngine | `core/sync_engine.py` | 双向同步 |
-
-### v2.1 架构收敛
-
-| 模块 | 文件 | 说明 |
-|:-----|:-----|:------|
-| Context API | `gateway/api/context_routes.py` | 单入口 POST /api/v1/context |
-| Prompt Builder | `core/prompt_builder.py` | 统一 Prompt 组装 |
-| Model Router | `core/model_router.py` | 模块级模型调度 |
-| Provider SDK | `core/providers/base.py` | 数据类 + Provider ABC |
-
-### 认知系统
-
-| 模块 | 文件 | 说明 |
-|:-----|:-----|:------|
-| Forget Engine | `core/forget.py` | importance 衰减 → 归档 → 删除 |
-| Memory Orchestrator | `core/orchestrator.py` | 判断什么该记 |
-| Personality Engine | `core/personality.py` | 偏好逐步学习（0.3→0.99） |
-| Subconscious | `core/subconscious.py` | 意识→前意识→潜意识三层检索 |
-| Workspace Optimizer | `core/optimizer.py` | 工作区生命周期管理 |
-| Knowledge Indexer | `core/knowledge_indexer.py` | projects/tasks/rules/soul 索引 |
-
-### MCP 协议
-
-| 模块 | 文件 | 说明 |
-|:-----|:-----|:------|
-| MCP Server | `mcp/server.py` | stdio 协议，5 个工具 |
-
----
-
-## API 端点（16 个）
+统一前缀 `/api/v1`。完整 OpenAPI 交互文档见运行中的 `http://localhost:8000/docs`。
 
 ### Memory
+
 ```
-POST /api/v1/memory/store     — 存入记忆
-POST /api/v1/memory/search    — 搜索记忆（支持 agent_id/shared 过滤）
-POST /api/v1/memory/update    — 更新
-POST /api/v1/memory/delete    — 删除
-GET  /api/v1/memory/recent    — 最近记忆
-POST /api/v1/memory/semantic-search — 向量语义搜索
+POST /memory/store          — 存入记忆
+POST /memory/search         — 关键词搜索（ILIKE，支持 user_id/agent_id/shared 过滤）
+POST /memory/update         — 更新
+POST /memory/delete         — 删除
+POST /memory/touch          — 命中强化（access_count+1, last_access=now）
+GET  /memory/recent         — 最近记忆
+POST /memory/semantic-search — 纯向量语义搜索
+POST /memory/hybrid-search   — BM25 + 向量混合检索，RRF 融合（推荐入口）
 ```
 
-### Context（单入口）
+示例：
+
+```bash
+curl -X POST http://localhost:8000/api/v1/memory/hybrid-search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"上次部署踩的坑","limit":10,"user_id":"me","agent_id":"main"}'
 ```
-POST /api/v1/context          — 自动编排 Memory+Knowledge+Emotion
+
+### Document（独立知识库检索，非 Memory 表）
+
+```
+POST /document/search
+POST /document/hybrid-search
+GET  /document/recent
+```
+
+### Context（单入口自动编排）
+
+```
+POST /context   — 自动编排 Memory + Knowledge + Emotion，一次调用拿到组装好的上下文
 ```
 
 ### Graph
+
 ```
-POST /api/v1/graph/entity     — 添加实体
-POST /api/v1/graph/relation   — 添加关系
-POST /api/v1/graph/query      — 查询图谱
+POST /graph/entity              — 添加实体
+POST /graph/relation            — 添加关系
+POST /graph/query               — 查询图谱
+GET  /graph/entity/{entity_id}  — 实体详情
 ```
 
 ### Emotion
+
 ```
-GET  /api/v1/emotion/state    — 当前情绪
-POST /api/v1/emotion/update   — 更新情绪
+GET  /emotion/state       — 当前情绪（完整维度，供 Agent 内部使用）
+GET  /emotion/display     — 当前情绪（展示模式，供小屏/UI 使用）
+POST /emotion/update      — 从文本触发情绪更新
+GET  /emotion/history     — 近期触发日志
+GET  /emotion/snapshots   — 每日冷快照（Deep 阶段生成，供心情趋势回顾）
 ```
 
-### Cognitive
+### Dream（三阶段记忆巩固）
+
 ```
-POST /api/v1/orchestrator/evaluate   — 判断是否存储
-GET  /api/v1/forget/scan             — 遗忘扫描
-GET  /api/v1/personality/summary     — 人格画像
-POST /api/v1/subconscious/retrieve   — 三层检索
-GET  /api/v1/router/summary          — 模型调度配置
-POST /api/v1/optimizer/run           — 工作区优化
-POST /api/v1/indexer/run             — 知识索引
+POST /dream/light     — 触发 Light 阶段（幂等：每天每条记忆一次）
+POST /dream/rem       — 触发 REM 阶段（幂等：每天一次）
+POST /dream/deep      — 触发 Deep 阶段，写入 Memory + 日记（幂等：每天一次）
+GET  /dream/status    — 各阶段最近一次运行时间 + 当前阈值配置
 ```
 
-### MCP Tools
+### Vault（只读 Obsidian 浏览）
+
 ```
-store_memory      — 存入
-search_memories   — 搜索
-semantic_search   — 语义搜索
-get_recent_memories — 最近记忆
-delete_memory     — 删除
+GET /vault/list?path=   — 列出目录（默认 vault 根目录）
+GET /vault/read?path=   — 读取文件内容（路径越权一律拒绝）
 ```
+
+### Sync / Export
+
+```
+POST /sync/qmd            — 手动触发 PostgreSQL → Markdown 同步
+GET  /sync/status         — 同步状态
+POST /export/agents       — 重新生成 per-agent_id 人类可读导出
+```
+
+### Events（SSE）
+
+```
+GET /events/stream   — 订阅记忆变更事件流（store/update/delete）
+```
+
+### Cognitive（认知子系统）
+
+```
+POST /orchestrator/evaluate   — 判断一段内容是否值得存储
+GET  /forget/scan             — 遗忘扫描（只读，不写库）
+POST /forget/apply            — 执行遗忘（归档，永不物理删除）
+GET  /personality/summary     — 人格画像
+POST /personality/process     — 处理文本更新人格画像
+POST /subconscious/retrieve   — 三层检索（意识/前意识/潜意识）
+GET  /router/summary          — 模型调度配置
+POST /router/profile          — 切换硬件档位
+POST /optimizer/scan          — 扫描可吸收文件
+POST /optimizer/run           — 执行完整工作区优化
+POST /optimizer/bootstrap     — 生成引导文件
+POST /indexer/scan            — 扫描工作区知识文件
+POST /indexer/run             — 索引工作区知识
+POST /dream/consolidate       — 旧版一次性记忆巩固（向后兼容，新代码用上面的三阶段接口）
+```
+
+### MCP 工具（stdio 协议，`mcp/server.py`）
+
+```
+store_memory / search_memories / recall / semantic_search /
+hybrid_search / get_recent_memories / delete_memory / evaluate
+```
+
+在支持 MCP 的客户端（如 Claude Code）里配置 `mcp/server.py` 为 stdio server 即可直接使用。
 
 ---
 
-## 数据流
+## OpenClaw 接入
 
-```
-你说的话
-  ↓
-Hermes / Agent → POST /api/v1/context
-  ↓
-Query Planner → Memory + Knowledge + Emotion + Personality
-  ↓
-返回组装好的 Context
-  ↓
-Agent 回复后 → POST /api/v1/memory/store（存本次对话）
-  ↓
-Forget Engine → 跟踪衰减
-  ↓
-Dream Engine（凌晨）→ 聚类 → 去重 → 生成 Knowledge
-  ↓
-QMD Generator → 写入 Obsidian（仅 shared=true）
-  ↓
-Workspace Optimizer → 清场 + 重写引导文件
-```
+`hcc-openclaw-plugin/` 目录是一个独立的 OpenClaw 插件（`hcc-memory`），通过 HTTP 调用 HCC 的 REST API，无需和 HCC 部署在同一台机器。详见 [`hcc-openclaw-plugin/README.md`](hcc-openclaw-plugin/README.md)，要点：
+
+- **kind**: `memory`（默认不独占 OpenClaw 的 memory slot，见插件 README「已知限制」）
+- **工具**：`memory_search`（走 `/memory/hybrid-search`）、`memory_get`（按 id 或内容匹配）
+- **钩子**：`session_end` / `before_compaction` / `tool_result_persist` 自动把会话摘要、压缩快照、工具结果异步存入 HCC
+- **配置**：插件 `configSchema` 的 `baseUrl` / `userId` / `agentId`，或对应的 `HCC_BASE_URL` / `HCC_USER_ID` / `HCC_AGENT_ID` 环境变量
 
 ---
 
-## 已知问题
+## 常见问题 / 部署说明
 
-### OpenClaw 兼容性（未解决）
-
-**问题：** OpenClaw 源码写死了读 MEMORY.md / memory/*.md 做事实来源。
-替换为 HCC 引导文件后，Agent 初始化报错 `reply session initialization conflicted for agent:main:main`。
-
-**原因：**
-- OpenClaw 启动时解析 AGENTS.md，引用到大量不存在的子目录（self-improving/domains/、proactivity/memory/working-buffer.md 等）
-- OpenClaw 的 SQLite 数据库（200MB WAL）偶发写入冲突
-
-**当前状态：** workspace 已还原为原始 507 个文件，OpenClaw 可正常运行。
-HCC + OpenClaw 集成需等待新版本 OpenClaw 测试。
-
-### 其他
-
-| 问题 | 状态 |
-|:-----|:-----|
-| `Path.walk()` Python 3.12+ 才支持 | ✅ 已改用 `os.walk()` |
-| PostgreSQL 时区 aware/naive 冲突 | ✅ 已修复 |
-| pgvector 扩展需手动 enable | ✅ 已加到启动脚本 |
-| 大文件内容导致 HTTP 500 | ✅ 已加 `sanitize()` |
-| shutil.ignored() Python 3.12+ | ✅ 已改用 `ignore_patterns()` |
+- **本地开发不需要 Docker**：只要有一个可访问的 PostgreSQL（装了 pgvector 扩展）实例，改好 `HCC_DATABASE_URL` 直接 `uvicorn` 启动即可；Redis、Ollama 均为可选依赖，未配置时对应功能优雅降级或关闭。
+- **embedding 零依赖跑通**：`HCC_EMBEDDING_PROVIDER=hash` 用确定性哈希代替真实向量模型，适合先把链路跑通再接真实 embedding（`ollama` 或 `sentence-transformers`）。
+- **重排模型是可选加分项**：`HCC_RERANK_ENABLED=false`（默认）时，混合检索仍然是完整的 BM25+向量+RRF 融合，只是不做二次交叉编码器重排。
+- **数据库表自动创建**：首次启动 `uvicorn` 会通过 SQLAlchemy `create_all` 自动建表，无需手动跑 migration 脚本即可开发（生产环境建议接入 Alembic，仓库已列出该依赖）。
+- **容器化部署**：`docker-compose.yml` 提供 api + mcp + db + redis 四服务栈，适合部署到常驻服务器；`Dockerfile` 仅打包 gateway/core/scanner/mcp，不含开发依赖。
 
 ---
 
-## git 历史（17 次 commit）
+## License
 
-```
-58d3423 最终补齐 - Subconscious + ModelRouter + 设计图
-0679a2c 多Agent支持 + QMD仅共享知识
-1363228 Workspace Optimizer
-11a5f05 Forget / Orchestrator / Personality
-7f39824 Stage 6+7+8 - Graph / Emotion / Dream
-390c12f Phase 3 - Scanner
-55b340f Phase 2 - MCP Memory Server
-dc54378 Phase 1 - Gateway + pgvector
-e3acf8b Knowledge Indexer
-...
-```
-
----
-
-## 部署架构
-
-```
-Mac Mini M4（开发/OpenClaw）
-  └── MLX Qwen3.5-4B（可选，localhost:11435）
-  └── OpenClaw Gateway（:18789）
-
-aicore N100（Docker）
-  └── HCC API（:8000）
-  └── PostgreSQL + pgvector（:5433）
-  └── Redis（:6381，可选）
-```
+[MIT](LICENSE)
