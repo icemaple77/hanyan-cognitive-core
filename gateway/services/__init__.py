@@ -12,6 +12,15 @@ from gateway.core.rrf import reciprocal_rank_fusion
 from gateway.models import Memory
 from gateway.schemas.memory import MemoryCreate, MemoryUpdate, MemorySearch
 
+# OpenClaw's tool_result_persist hook auto-logs every tool call's raw output as a
+# memory (importance=0.3 by default) — with thousands of these accumulated, they
+# drown out real content in search results (recursive tool-log-of-a-tool-log
+# quoting, near-zero relevance). exclude_noise (default on) drops them below this
+# threshold unless the caller explicitly asks for type="tool_result"; anything
+# manually promoted above the threshold stays searchable.
+NOISE_TYPE = "tool_result"
+NOISE_IMPORTANCE_THRESHOLD = 0.5
+
 
 class MemoryService:
     def __init__(self, session: AsyncSession):
@@ -73,6 +82,15 @@ class MemoryService:
         result = await self.session.execute(delete(Memory).where(Memory.id == memory_id))
         return result.rowcount > 0
 
+    @staticmethod
+    def _apply_noise_filter(stmt, type: Optional[str], exclude_noise: bool):
+        """Drop low-importance tool_result rows, unless the caller explicitly asked for that type."""
+        if exclude_noise and type != NOISE_TYPE:
+            stmt = stmt.where(
+                ~((Memory.type == NOISE_TYPE) & (Memory.importance < NOISE_IMPORTANCE_THRESHOLD))
+            )
+        return stmt
+
     async def semantic_search(
         self,
         embedding: list[float],
@@ -80,6 +98,7 @@ class MemoryService:
         user_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         type: Optional[str] = None,
+        exclude_noise: bool = True,
     ) -> list[tuple[Memory, float]]:
         """Return the ``limit`` memories most similar to ``embedding``.
 
@@ -97,6 +116,7 @@ class MemoryService:
             stmt = stmt.where(Memory.agent_id == agent_id)
         if type:
             stmt = stmt.where(Memory.type == type)
+        stmt = self._apply_noise_filter(stmt, type, exclude_noise)
         stmt = stmt.order_by(distance).limit(limit)
 
         result = await self.session.execute(stmt)
@@ -109,6 +129,7 @@ class MemoryService:
         user_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         type: Optional[str] = None,
+        exclude_noise: bool = True,
     ) -> list[tuple[Memory, float]]:
         """BM25-style full-text search via Postgres ``ts_rank_cd``.
 
@@ -137,6 +158,7 @@ class MemoryService:
             stmt = stmt.where(Memory.agent_id == agent_id)
         if type:
             stmt = stmt.where(Memory.type == type)
+        stmt = self._apply_noise_filter(stmt, type, exclude_noise)
         stmt = stmt.order_by(rank.desc()).limit(limit)
 
         result = await self.session.execute(stmt)

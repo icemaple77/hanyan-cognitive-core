@@ -70,6 +70,10 @@ class SemanticSearchRequest(BaseModel):
     user_id: str | None = None
     agent_id: str | None = None
     type: str | None = None
+    exclude_noise: bool = Field(
+        default=True,
+        description="Drop low-importance tool_result memories (auto-logged tool call output) unless type='tool_result' is explicitly requested",
+    )
 
 
 class HybridSearchRequest(BaseModel):
@@ -86,6 +90,10 @@ class HybridSearchRequest(BaseModel):
     )
     rerank: bool = Field(
         default=False, description="Rerank the fused top results with the optional cross-encoder (HCC_RERANK_ENABLED must also be on; silently falls back to RRF order if unavailable)"
+    )
+    exclude_noise: bool = Field(
+        default=True,
+        description="Drop low-importance tool_result memories (auto-logged tool call output) unless type='tool_result' is explicitly requested",
     )
 
 
