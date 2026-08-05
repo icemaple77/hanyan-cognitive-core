@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from core.config import core_settings
+from core.emotion import get_emotion_engine
 from core.managers.context_builder import ContextBuilder
 from core.prompt_builder import PromptBuilder
 from core.query_planner import QueryPlanner
@@ -34,7 +35,7 @@ router = APIRouter()
 
 # Shared, stateless pipeline components (constructed once, reused per request).
 _planner = QueryPlanner()
-_context_builder = ContextBuilder()
+_context_builder = ContextBuilder(emotion_provider=lambda user_id: get_emotion_engine().get_summary())
 _prompt_builder = PromptBuilder()
 
 

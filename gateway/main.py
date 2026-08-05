@@ -11,6 +11,8 @@ from sqlalchemy import text
 
 from core.config import core_settings
 from core.dream import DreamEngine
+from core.emotion import get_emotion_engine
+from core.emotion_events import subscribe_emotion_events
 from core.sync_engine import SyncEngine
 from gateway.api import health, memory_routes, context_routes, graph_routes, emotion_routes, cognitive_routes, document_routes, events_routes, sync_routes, dream_routes, vault_routes, export_routes
 from gateway.core.database import engine, Base
@@ -111,6 +113,10 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     bus = await get_event_bus().connect()
     logger.info("EventBus connected (backend=%s)", bus.backend)
+
+    restored = await get_emotion_engine().load_from_redis()
+    logger.info("emotion state %s", "restored from redis" if restored else "starting from defaults")
+    await subscribe_emotion_events()
 
     sync_task: asyncio.Task | None = None
     if core_settings.sync_auto_enabled:

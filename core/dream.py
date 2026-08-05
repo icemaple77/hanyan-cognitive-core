@@ -45,7 +45,7 @@ from core.event_bus import EventBus, EventType
 from core.personality import get_personality_engine
 from gateway.core.database import async_session
 from gateway.core.events import get_event_bus
-from gateway.models import DreamRun, DreamSignal, Memory
+from gateway.models import DreamRun, DreamSignal, EmotionSnapshot, Memory
 
 logger = logging.getLogger(__name__)
 
@@ -672,9 +672,38 @@ class DreamEngine:
                 "trigger_time": f"{self._settings.dream_deep_hour:02d}:{self._settings.dream_deep_minute:02d}",
             }
 
+            # T2 (docs/emotion-design.md 2.5): nudge tonight's baseline anchor
+            # from what got promoted, then record both the state that
+            # produced tonight's diary and the cold daily snapshot (2.6).
+            emotion_engine = get_emotion_engine()
+            dream_items = [
+                {"text": f"{m.summary or ''} {m.content or ''}", "importance": s["score"]}
+                for m, s in promoted_pairs
+            ]
+            logger.info("DEBUG dream_items=%r", dream_items)
+            emotion_adjustment = emotion_engine.apply_dream_adjustment(dream_items)
+            logger.info("DEBUG emotion_adjustment=%r", emotion_adjustment)
+            emotion_summary = emotion_engine.get_summary()
+            stats["emotion_adjustment"] = emotion_adjustment
+
+            try:
+                snapshot_date = datetime.now().date()
+                existing_snapshot = (
+                    await session.execute(
+                        select(EmotionSnapshot).where(EmotionSnapshot.snapshot_date == snapshot_date)
+                    )
+                ).scalars().first()
+                snapshot_row = existing_snapshot or EmotionSnapshot(snapshot_date=snapshot_date)
+                snapshot_row.state = emotion_summary["state"]
+                snapshot_row.named_state = emotion_summary["named_state"]
+                snapshot_row.dominant_trigger = emotion_adjustment.get("dominant_trigger")
+                if existing_snapshot is None:
+                    session.add(snapshot_row)
+            except Exception:  # noqa: BLE001 - snapshot failure must not roll back promotions
+                logger.exception("emotion snapshot write failed; deep promotions still committed")
+
             narrative_path: Path | None = None
             try:
-                emotion_summary = get_emotion_engine().get_summary()
                 personality_summary = get_personality_engine().get_summary()
                 rem_clusters = await self._todays_rem_clusters(session)
                 diary_dir = Path(self._settings.dream_diary_dir).expanduser()
@@ -707,6 +736,8 @@ class DreamEngine:
                 "run_deep complete: scanned=%s eligible=%s promoted=%s",
                 stats["scanned"], stats["eligible"], stats["promoted"],
             )
+
+        await emotion_engine.save_to_redis()
 
         try:
             bus = self._event_bus or get_event_bus()

@@ -33,7 +33,14 @@ async def store_memory(
 ) -> MemoryResponse:
     service = MemoryService(session)
     memory = await service.create(data)
-    await publish_memory_event("store", memory.id, user_id=memory.user_id)
+    await publish_memory_event(
+        "store",
+        memory.id,
+        user_id=memory.user_id,
+        content=memory.content,
+        importance=memory.importance,
+        tags=memory.tags,
+    )
     return MemoryResponse.model_validate(memory)
 
 

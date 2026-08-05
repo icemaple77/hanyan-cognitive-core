@@ -166,17 +166,29 @@ class PromptBuilder:
     def _render_emotion(
         self, emotion_state: dict[str, Any] | str | None
     ) -> str:
-        """Render emotion data into an ``## Emotional State`` section."""
+        """Render emotion data into an ``## Emotional State`` section.
+
+        Prefers the named-state label (docs/emotion-design.md 2.2) over the
+        raw 6-dim ``state`` dict when both are present — "雀跃" is something a
+        model can carry directly into tone, a dumped dict of floats is not
+        (2.4). ``expression_hint`` (if present) rides along as a soft tone
+        constraint via the generic key/value loop below.
+        """
         if not emotion_state:
             return ""
         if isinstance(emotion_state, str):
             return self._section("Emotional State", emotion_state)
-        mood = emotion_state.get("mood") or emotion_state.get("state")
+        mood = (
+            emotion_state.get("mood")
+            or emotion_state.get("named_state")
+            or emotion_state.get("primary_emotion")
+        )
         lines: list[str] = []
         if mood:
             lines.append(f"- mood: {mood}")
+        skip_keys = {"mood", "state", "named_state", "primary_emotion"}
         for key, value in emotion_state.items():
-            if key in ("mood", "state") or value in (None, ""):
+            if key in skip_keys or value in (None, ""):
                 continue
             lines.append(f"- {key}: {value}")
         return self._section("Emotional State", "\n".join(lines))

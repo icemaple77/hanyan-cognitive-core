@@ -189,7 +189,12 @@ class ContextBuilder:
             blocks.append("\n".join(lines))
 
         if emotion_state:
-            mood = emotion_state.get("mood") or emotion_state.get("state") or ""
+            mood = (
+                emotion_state.get("mood")
+                or emotion_state.get("named_state")
+                or emotion_state.get("primary_emotion")
+                or ""
+            )
             blocks.append(f"## Emotional State\n- {mood}".rstrip())
 
         return "\n\n".join(blocks)

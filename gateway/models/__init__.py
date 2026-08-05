@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Float, DateTime, Text, JSON, Boolean, Integer, Index, UniqueConstraint, event, text
+from sqlalchemy import Column, String, Float, Date, DateTime, Text, JSON, Boolean, Integer, Index, UniqueConstraint, event, text
 from pgvector.sqlalchemy import Vector
 
 from gateway.core.database import Base
@@ -126,6 +126,25 @@ class DreamSignal(Base):
             unique=True,
         ),
     )
+
+
+class EmotionSnapshot(Base):
+    """Deep-phase daily cold snapshot of the emotion state (docs/emotion-design.md 2.6).
+
+    One row per calendar day (``snapshot_date`` unique) — day-grain is
+    deliberate: current state is served hot from Redis, this table only backs
+    long-term trend / "回顾某天心情" queries, so a high-frequency write table
+    isn't warranted (see the design doc's rationale in 2.6).
+    """
+
+    __tablename__ = "emotion_snapshots"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    snapshot_date = Column(Date, nullable=False, unique=True)
+    state = Column(JSON, nullable=False)
+    named_state = Column(String(32), nullable=True)
+    dominant_trigger = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), nullable=False)
 
 
 class DreamRun(Base):

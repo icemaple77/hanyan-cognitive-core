@@ -53,6 +53,13 @@ class CoreSettings(BaseSettings):
     ttl_embedding: int = Field(
         default=604800, ge=1, description="TTL for cached embeddings (7 days)."
     )
+    ttl_emotion: int = Field(
+        default=2592000,
+        ge=1,
+        description="TTL for the Redis hot emotion-state snapshot (30 days; "
+        "emotion decays on a day-scale, not a chat-session scale, see "
+        "docs/emotion-design.md 2.6).",
+    )
 
     # --- Event bus -------------------------------------------------------
     event_channel_prefix: str = Field(
@@ -184,6 +191,36 @@ class CoreSettings(BaseSettings):
         "/vault/read (HCC_VAULT_ROOT). Path traversal outside this root is rejected.",
     )
 
+    # --- Emotion engine v2 (docs/emotion-design.md) ----------------------
+    # Named-state thresholds (2.2) — initial proposal, not yet calibrated
+    # against real conversation data; kept here (rather than hardcoded) so
+    # they can be tuned via env/`.env` without a code change.
+    emotion_attachment_closeness: float = Field(default=0.75, ge=0.0, le=1.0)
+    emotion_attachment_happiness: float = Field(default=0.6, ge=0.0, le=1.0)
+    emotion_elated_happiness: float = Field(default=0.75, ge=0.0, le=1.0)
+    emotion_elated_curiosity: float = Field(default=0.6, ge=0.0, le=1.0)
+    emotion_elated_fatigue_max: float = Field(default=0.3, ge=0.0, le=1.0)
+    emotion_focused_focus: float = Field(default=0.75, ge=0.0, le=1.0)
+    emotion_focused_fatigue_max: float = Field(default=0.5, ge=0.0, le=1.0)
+    emotion_tired_fatigue: float = Field(default=0.7, ge=0.0, le=1.0)
+    emotion_low_happiness_max: float = Field(default=0.35, ge=0.0, le=1.0)
+    emotion_low_worry: float = Field(default=0.4, ge=0.0, le=1.0)
+    emotion_worried_worry: float = Field(default=0.6, ge=0.0, le=1.0)
+    emotion_curious_curiosity: float = Field(default=0.7, ge=0.0, le=1.0)
+    emotion_curious_worry_max: float = Field(default=0.3, ge=0.0, le=1.0)
+
+    # Retrieval mood-congruent weighting (2.3) — kept deliberately small so
+    # emotion nudges ranking without overriding semantic relevance.
+    emotion_retrieval_closeness_weight: float = Field(default=0.15, ge=0.0, le=1.0)
+    emotion_retrieval_worry_weight: float = Field(default=0.10, ge=0.0, le=1.0)
+    emotion_retrieval_closeness_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    emotion_retrieval_worry_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+
+    # Dream -> emotion baseline nudge (2.5) — fraction of the aggregate
+    # T3-keyword delta from tonight's promoted memories that gets folded
+    # into the decay-target anchor (not applied to current state directly).
+    emotion_dream_baseline_weight: float = Field(default=0.3, ge=0.0, le=1.0)
+
     def ttl_for(self, category: str) -> int:
         """Return the default TTL (seconds) for a working-memory ``category``.
 
@@ -194,6 +231,7 @@ class CoreSettings(BaseSettings):
             "task": self.ttl_task,
             "prompt": self.ttl_prompt,
             "embedding": self.ttl_embedding,
+            "emotion": self.ttl_emotion,
         }.get(category, self.ttl_chat)
 
 

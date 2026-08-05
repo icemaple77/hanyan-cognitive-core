@@ -21,49 +21,23 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from core.emotion import NAMED_STATE_CALM, NAMED_STATE_META, compute_named_state
+
 # 官方 REM_REFLECTION_TAG_BLACKLIST 的对应物：过滤角色标签，保留有技术质感
 # 但不泄露具体值的措辞（"dbd31600"/"cron job" 这类可以留，真正的密钥不行）。
 _ROLE_TAG_RE = re.compile(r"\b(assistant|user|system|subagent)\b", re.IGNORECASE)
 _SECRET_LIKE_RE = re.compile(r"\b(sk-[A-Za-z0-9]{16,}|[A-Za-z0-9_\-]{32,})\b")
 
-_NAMED_STATE_TONE: dict[str, str] = {
-    "依恋": "心里一直惦记着你",
-    "雀跃": "今天有点停不下来的兴奋",
-    "专注": "整个人都绷得很紧，一件事一件事地过",
-    "疲惫": "有点累，脑子转得慢了",
-    "低落": "情绪有点沉，写字都慢了半拍",
-    "担忧": "总觉得有什么事没处理好",
-    "好奇": "满脑子都是新冒出来的问题",
-    "平静": "今天没什么大起大落，挺安稳的",
-}
-
 
 def _named_state(emotion_summary: dict[str, Any]) -> str:
     """Re-derive the named state from the 6-dim snapshot (see emotion-design.md 2.2).
 
-    Recomputed here rather than trusting a cached label, so the diary tone
-    always matches the emotion snapshot passed in at call time.
+    Recomputed here (via the canonical :func:`core.emotion.compute_named_state`)
+    rather than trusting a cached label, so the diary tone always matches the
+    emotion snapshot passed in at call time.
     """
     state = emotion_summary.get("state", {}) or {}
-
-    def g(key: str) -> float:
-        return float(state.get(key, 0.5))
-
-    if g("closeness") > 0.75 and g("happiness") > 0.6:
-        return "依恋"
-    if g("happiness") > 0.75 and g("curiosity") > 0.6 and g("fatigue") < 0.3:
-        return "雀跃"
-    if g("focus") > 0.75 and g("fatigue") < 0.5:
-        return "专注"
-    if g("fatigue") > 0.7:
-        return "疲惫"
-    if g("happiness") < 0.35 and g("worry") > 0.4:
-        return "低落"
-    if g("worry") > 0.6:
-        return "担忧"
-    if g("curiosity") > 0.7 and g("worry") < 0.3:
-        return "好奇"
-    return "平静"
+    return compute_named_state(state)
 
 
 def _sanitize(text: str) -> str:
@@ -88,7 +62,7 @@ def _render_narrative(
     top_traits: list[str],
 ) -> str:
     lines = [f"\n## {date_.isoformat()}", ""]
-    tone = _NAMED_STATE_TONE.get(named_state, _NAMED_STATE_TONE["平静"])
+    tone = NAMED_STATE_META.get(named_state, NAMED_STATE_META[NAMED_STATE_CALM])["diary_tone"]
     lines.append(f"今晚的情绪基调：**{named_state}** —— {tone}。")
     if top_traits:
         lines.append(f"最近一直惦记着的：{'、'.join(_sanitize(t) for t in top_traits)}。")

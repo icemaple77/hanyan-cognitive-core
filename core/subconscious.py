@@ -16,9 +16,47 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from core.config import core_settings
+from core.emotion import get_emotion_engine
+
 logger = logging.getLogger(__name__)
 
 RRF_K = 60  # RRF constant
+
+# Mood-congruent retrieval weighting (docs/emotion-design.md 2.3) — this is
+# not "let emotion distort relevance", it's a small tie-breaking nudge that
+# mirrors the real mood-congruent-memory effect: candidates tagged as
+# intimate/concerning get a slight boost only when the current emotional
+# state already leans that way. Kept deliberately small (see
+# HCC_EMOTION_RETRIEVAL_*_WEIGHT defaults, 0.10-0.15) so it never overrides
+# semantic relevance.
+_INTIMACY_TAGS = {
+    "亲密", "含烟", "爱", "关心", "陪伴", "喜欢", "想念", "谢谢",
+    "closeness", "love", "intimacy", "affection",
+}
+_WORRY_TAGS = {
+    "问题", "异常", "故障", "错误", "风险", "紧急", "bug",
+    "issue", "error", "worry", "incident", "urgent",
+}
+
+
+def _emotion_weight(tags: list[Any], emotion_state: dict[str, float]) -> float:
+    """Mood-congruent RRF weight (0, or one/both of the 2.3 bonuses)."""
+    if not emotion_state:
+        return 0.0
+    tagset = {str(t).lower() for t in tags}
+    weight = 0.0
+    if (
+        emotion_state.get("closeness", 0.0) > core_settings.emotion_retrieval_closeness_threshold
+        and tagset & _INTIMACY_TAGS
+    ):
+        weight += core_settings.emotion_retrieval_closeness_weight
+    if (
+        emotion_state.get("worry", 0.0) > core_settings.emotion_retrieval_worry_threshold
+        and tagset & _WORRY_TAGS
+    ):
+        weight += core_settings.emotion_retrieval_worry_weight
+    return weight
 
 
 @dataclass
@@ -65,7 +103,8 @@ class Subconscious:
 
     async def retrieve(self, query: str, memory_provider: Any = None,
                        limit: int = 10, user_id: str | None = None,
-                       agent_id: str | None = None) -> list[SubconsciousResult]:
+                       agent_id: str | None = None,
+                       emotion_state: dict[str, float] | None = None) -> list[SubconsciousResult]:
         """Three-layer retrieval.
 
         Parameters
@@ -74,11 +113,16 @@ class Subconscious:
         memory_provider: optional — Memory provider for searching subconscious
         limit: int — Max results
         user_id: optional — Filter by user
+        emotion_state: optional — 6-dim state for mood-congruent RRF weighting
+            (docs/emotion-design.md 2.3). Defaults to the live EmotionEngine
+            state when omitted.
 
         Returns
         -------
         List of SubconsciousResult sorted by RRF score.
         """
+        if emotion_state is None:
+            emotion_state = get_emotion_engine().state
         results: list[SubconsciousResult] = []
 
         # Layer 1: Conscious — current session
@@ -144,10 +188,12 @@ class Subconscious:
                 logger.warning("subconscious deep search failed: %s", e)
 
         # Merge with RRF scoring
-        return self._rrf_merge(results, limit)
+        return self._rrf_merge(results, limit, emotion_state)
 
-    def _rrf_merge(self, results: list[SubconsciousResult], limit: int) -> list[SubconsciousResult]:
-        """Reciprocal Rank Fusion merge with dedup."""
+    def _rrf_merge(
+        self, results: list[SubconsciousResult], limit: int, emotion_state: dict[str, float] | None = None
+    ) -> list[SubconsciousResult]:
+        """Reciprocal Rank Fusion merge with dedup + mood-congruent weighting (2.3)."""
         seen_content: set[str] = set()
         ranked: list[SubconsciousResult] = []
 
@@ -162,6 +208,7 @@ class Subconscious:
                     (1.0 / (RRF_K + source_rank + 1))
                     for _ in range(1)
                 ) + (1.0 / (RRF_K + item_rank + 1))
+                score *= 1 + _emotion_weight(item.tags, emotion_state or {})
                 item.score = round(score, 4)
 
         # Sort by score descending, dedup
