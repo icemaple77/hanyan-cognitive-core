@@ -33,8 +33,8 @@ class MemoryService:
         return memory
 
     async def search(self, query: MemorySearch) -> tuple[list[Memory], int]:
-        stmt = select(Memory)
-        count_stmt = select(func.count(Memory.id))
+        stmt = select(Memory).where(Memory.status == "active")
+        count_stmt = select(func.count(Memory.id)).where(Memory.status == "active")
 
         if query.user_id:
             stmt = stmt.where(Memory.user_id == query.user_id)
@@ -109,7 +109,9 @@ class MemoryService:
         """
         distance = Memory.embedding.cosine_distance(embedding).label("distance")
 
-        stmt = select(Memory, distance).where(Memory.embedding.is_not(None))
+        stmt = select(Memory, distance).where(
+            Memory.embedding.is_not(None), Memory.status == "active"
+        )
         if user_id:
             stmt = stmt.where(Memory.user_id == user_id)
         if agent_id:
@@ -151,7 +153,9 @@ class MemoryService:
         tsquery_expr = func.plainto_tsquery("simple", tokens)
         rank = func.ts_rank_cd(tsvector_expr, tsquery_expr).label("rank")
 
-        stmt = select(Memory, rank).where(tsvector_expr.op("@@")(tsquery_expr))
+        stmt = select(Memory, rank).where(
+            tsvector_expr.op("@@")(tsquery_expr), Memory.status == "active"
+        )
         if user_id:
             stmt = stmt.where(Memory.user_id == user_id)
         if agent_id:
@@ -224,8 +228,14 @@ class MemoryService:
         return top[:limit]
 
     async def get_recent(self, limit: int = 20, offset: int = 0) -> tuple[list[Memory], int]:
-        stmt = select(Memory).order_by(Memory.created_at.desc()).offset(offset).limit(limit)
-        count_stmt = select(func.count(Memory.id))
+        stmt = (
+            select(Memory)
+            .where(Memory.status == "active")
+            .order_by(Memory.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        count_stmt = select(func.count(Memory.id)).where(Memory.status == "active")
 
         total_result = await self.session.execute(count_stmt)
         total = total_result.scalar() or 0
