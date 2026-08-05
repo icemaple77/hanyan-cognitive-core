@@ -40,6 +40,8 @@ async def store_memory(
         content=memory.content,
         importance=memory.importance,
         tags=memory.tags,
+        type=memory.type,
+        source=memory.source,
     )
     return MemoryResponse.model_validate(memory)
 

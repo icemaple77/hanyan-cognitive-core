@@ -13,6 +13,7 @@ from core.config import core_settings
 from core.dream import DreamEngine
 from core.emotion import get_emotion_engine
 from core.emotion_events import subscribe_emotion_events
+from core.noise_filter_events import subscribe_noise_filter_events
 from core.sync_engine import SyncEngine
 from gateway.api import health, memory_routes, context_routes, graph_routes, emotion_routes, cognitive_routes, document_routes, events_routes, sync_routes, dream_routes, vault_routes, export_routes
 from gateway.core.database import engine, Base
@@ -117,6 +118,7 @@ async def lifespan(app: FastAPI):
     restored = await get_emotion_engine().load_from_redis()
     logger.info("emotion state %s", "restored from redis" if restored else "starting from defaults")
     await subscribe_emotion_events()
+    await subscribe_noise_filter_events()
 
     sync_task: asyncio.Task | None = None
     if core_settings.sync_auto_enabled:

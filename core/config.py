@@ -221,6 +221,50 @@ class CoreSettings(BaseSettings):
     # into the decay-target anchor (not applied to current state directly).
     emotion_dream_baseline_weight: float = Field(default=0.3, ge=0.0, le=1.0)
 
+    # --- Local noise filter (docs/local-noise-filter.md) ----------------
+    # Async, event-driven review of low-trust memory writes (type=tool_result
+    # or source=openclaw_plugin) via a local Ollama model — never blocks
+    # /memory/store, see core/noise_filter_events.py.
+    noise_filter_enabled: bool = Field(
+        default=True,
+        description="Master switch for async local-model noise review "
+        "(HCC_NOISE_FILTER_ENABLED). Subscribes to MEMORY_CREATED; a low-value "
+        "verdict soft-deletes (status='discarded'), never a hard delete.",
+    )
+    noise_filter_model: str = Field(
+        default="qwen3.5:4b",
+        description="Ollama model tag for noise review (HCC_NOISE_FILTER_MODEL). "
+        "qwen3.5:4b scored 7/8 on the 8-sample validation run at ~1.76s/call warm "
+        "(docs/local-noise-filter.md 一/二). think:false is mandatory — without it "
+        "the model spends its whole output budget on hidden reasoning and never "
+        "emits the JSON verdict.",
+    )
+    noise_filter_ollama_url: str = Field(
+        default="http://localhost:11434",
+        description="Ollama base URL for noise review (HCC_NOISE_FILTER_OLLAMA_URL). "
+        "Independent of HCC_OLLAMA_URL (gateway/core/embeddings.py's plain "
+        "os.getenv config), same default host.",
+    )
+    noise_filter_timeout: float = Field(
+        default=15.0, gt=0,
+        description="Per-call HTTP timeout in seconds against Ollama "
+        "(HCC_NOISE_FILTER_TIMEOUT). Cold start (model swapped out) measured "
+        "~3-4s, warm ~1.3-1.5s.",
+    )
+    noise_filter_concurrency: int = Field(
+        default=4, ge=1,
+        description="Concurrency cap used by scripts/noise_filter_backfill.py's "
+        "Ollama calls (HCC_NOISE_FILTER_CONCURRENCY); measured ~0.8s/item "
+        "effective throughput at 4 (docs/local-noise-filter.md 五).",
+    )
+    noise_filter_truncate_chars: int = Field(
+        default=1500, ge=1,
+        description="Content truncation length before sending to the model "
+        "(HCC_NOISE_FILTER_TRUNCATE_CHARS). Matches the 8-sample validation run; "
+        "not yet re-validated against the full tool_result content-length "
+        "distribution (docs/local-noise-filter.md 三).",
+    )
+
     def ttl_for(self, category: str) -> int:
         """Return the default TTL (seconds) for a working-memory ``category``.
 
