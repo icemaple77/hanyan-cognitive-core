@@ -2,8 +2,9 @@
 
 import uuid
 from datetime import datetime, timezone
+from enum import StrEnum
 
-from sqlalchemy import Column, String, Float, Date, DateTime, Text, JSON, Boolean, Integer, Index, UniqueConstraint, event, text
+from sqlalchemy import Column, String, Float, Date, DateTime, Text, JSON, Boolean, Integer, Index, UniqueConstraint, CheckConstraint, event, text
 from pgvector.sqlalchemy import Vector
 
 from gateway.core.database import Base
@@ -13,6 +14,24 @@ from gateway.core.fts import build_search_text, tokenize_for_fts
 # models (e.g. all-mpnet-base-v2, nomic-embed-text). Keep in sync with the value
 # used by the embedding provider in gateway.core.embeddings.
 EMBEDDING_DIM = 1024  # Qwen3-Embedding-0.6B 原生维度(2026-08 接入,0条历史数据用旧768维,无迁移负担)
+
+
+class MemoryStatus(StrEnum):
+    """Canonical values for ``Memory.status`` (soft-delete lifecycle states).
+
+    Two distinct soft-delete semantics share this column, kept separate
+    rather than merged (see docs/local-noise-filter.md 零):
+    - DISCARDED: local-model noise filter verdict (keep=false) — a memory
+      judged low-quality/noise at write time.
+    - ARCHIVED: forget-engine decay or explicit delete — a memory that faded
+      or was intentionally removed after having been useful.
+    Every read-path query filters ``status == ACTIVE`` (whitelist), so both
+    DISCARDED and ARCHIVED are already excluded from retrieval identically.
+    """
+
+    ACTIVE = "active"
+    DISCARDED = "discarded"
+    ARCHIVED = "archived"
 
 
 class Memory(Base):
@@ -28,7 +47,7 @@ class Memory(Base):
     importance = Column(Float, default=0.5)
     tags = Column(JSON, default=list)
     source = Column(String(64), default="api")
-    status = Column(String(32), default="active")
+    status = Column(String(32), default=MemoryStatus.ACTIVE.value)
     embedding = Column(Vector(EMBEDDING_DIM), nullable=True)
     # Pre-tokenized (jieba, see gateway.core.fts) blob of content+summary+tags,
     # kept in sync by the before_insert/before_update listeners below. Indexed
@@ -46,6 +65,10 @@ class Memory(Base):
             "ix_memories_search_text_fts",
             text("to_tsvector('simple', search_text)"),
             postgresql_using="gin",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'discarded', 'archived')",
+            name="ck_memories_status",
         ),
     )
 

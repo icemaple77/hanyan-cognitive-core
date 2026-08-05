@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from core.config import CoreSettings, core_settings
 from gateway.core.database import async_session
-from gateway.models import Memory
+from gateway.models import Memory, MemoryStatus
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ class AgentExporter:
     async def _fetch_memories(self) -> list[Memory]:
         async with self._session_factory() as session:
             result = await session.execute(
-                select(Memory).where(Memory.status == "active").order_by(Memory.agent_id, Memory.created_at)
+                select(Memory).where(Memory.status == MemoryStatus.ACTIVE).order_by(Memory.agent_id, Memory.created_at)
             )
             return list(result.scalars().all())
 

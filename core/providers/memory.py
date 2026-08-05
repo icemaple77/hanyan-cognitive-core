@@ -39,7 +39,7 @@ from core.providers.base import (
 )
 from gateway.core.database import async_session
 from gateway.core.embeddings import embed_text
-from gateway.models import Memory
+from gateway.models import Memory, MemoryStatus
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +112,9 @@ class MemoryProvider(Provider):
         memories are returned.
         """
         async with self._session_factory() as session:
-            stmt = select(Memory).where(Memory.status == "active")
+            stmt = select(Memory).where(Memory.status == MemoryStatus.ACTIVE)
             count_stmt = select(func.count(Memory.id)).where(
-                Memory.status == "active"
+                Memory.status == MemoryStatus.ACTIVE
             )
 
             if query.user_id:
@@ -163,7 +163,7 @@ class MemoryProvider(Provider):
             importance=data.importance,
             tags=list(data.tags or []),
             source=data.source,
-            status="active",
+            status=MemoryStatus.ACTIVE,
             embedding=embed_text(data.content),
         )
         async with self._session_factory() as session:
@@ -222,7 +222,7 @@ class MemoryProvider(Provider):
             memory = await session.get(Memory, id)
             if memory is None:
                 return False
-            memory.status = "archived"
+            memory.status = MemoryStatus.ARCHIVED
             try:
                 await session.flush()
                 await session.commit()

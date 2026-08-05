@@ -45,7 +45,7 @@ from core.event_bus import EventBus, EventType
 from core.personality import get_personality_engine
 from gateway.core.database import async_session
 from gateway.core.events import get_event_bus
-from gateway.models import DreamRun, DreamSignal, EmotionSnapshot, Memory
+from gateway.models import DreamRun, DreamSignal, EmotionSnapshot, Memory, MemoryStatus
 
 logger = logging.getLogger(__name__)
 
@@ -283,7 +283,7 @@ class DreamEngine:
         async with self._session_factory() as session:
             cutoff = started - timedelta(hours=self._settings.dream_light_lookback_hours)
             result = await session.execute(
-                select(Memory).where(Memory.status == "active").where(Memory.created_at >= cutoff)
+                select(Memory).where(Memory.status == MemoryStatus.ACTIVE).where(Memory.created_at >= cutoff)
             )
             memories = list(result.scalars().all())
 
@@ -348,7 +348,7 @@ class DreamEngine:
 
             cutoff = started - timedelta(days=self._settings.dream_rem_lookback_days)
             result = await session.execute(
-                select(Memory).where(Memory.status == "active").where(Memory.created_at >= cutoff)
+                select(Memory).where(Memory.status == MemoryStatus.ACTIVE).where(Memory.created_at >= cutoff)
             )
             memories = [m for m in result.scalars().all() if m.tags]
 
@@ -600,7 +600,7 @@ class DreamEngine:
 
             cutoff = started - timedelta(days=self._settings.dream_max_age_days)
             result = await session.execute(
-                select(Memory).where(Memory.status == "active").where(Memory.created_at >= cutoff)
+                select(Memory).where(Memory.status == MemoryStatus.ACTIVE).where(Memory.created_at >= cutoff)
             )
             candidates = list(result.scalars().all())
 
@@ -637,7 +637,9 @@ class DreamEngine:
             knowledge_summaries: list[dict[str, Any]] = []
             knowledge_skip_notes: list[dict[str, Any]] = []
             if promoted_pairs:
-                existing_result = await session.execute(select(Memory).where(Memory.type == "knowledge"))
+                existing_result = await session.execute(
+                    select(Memory).where(Memory.type == "knowledge").where(Memory.status == MemoryStatus.ACTIVE)
+                )
                 existing_by_cluster: dict[str, Memory] = {}
                 for km in existing_result.scalars().all():
                     for t in km.tags or []:

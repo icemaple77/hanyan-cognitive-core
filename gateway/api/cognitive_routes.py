@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.database import get_session
-from gateway.models import Memory
+from gateway.models import Memory, MemoryStatus
 from gateway.schemas.memory import MemorySearch
 from gateway.services import MemoryService
 from core.orchestrator import get_orchestrator
@@ -62,7 +62,7 @@ def _scan_memories(memories: list[Memory]) -> list[dict]:
 @router.get("/forget/scan", summary="Scan memories for decay(只读,不写库)")
 async def scan_for_forget(agent_id: str | None = None, limit: int = 200,
                           session: AsyncSession = Depends(get_session)):
-    stmt = select(Memory).where(Memory.status == "active")
+    stmt = select(Memory).where(Memory.status == MemoryStatus.ACTIVE)
     if agent_id:
         stmt = stmt.where(Memory.agent_id == agent_id)
     stmt = stmt.order_by(Memory.created_at.desc()).limit(limit)
@@ -83,7 +83,7 @@ async def apply_forget(data: ForgetApplyRequest, session: AsyncSession = Depends
     """scan 只建议,这个才真的写库。archive/delete 建议统一映射成"归档"
     (status=archived,移出默认检索范围)——按公子原设计,记忆不物理删除,
     真删除是以后接 NAS 冷备份才该做的事,现在宁可保守。"""
-    stmt = select(Memory).where(Memory.status == "active")
+    stmt = select(Memory).where(Memory.status == MemoryStatus.ACTIVE)
     if data.agent_id:
         stmt = stmt.where(Memory.agent_id == data.agent_id)
     stmt = stmt.order_by(Memory.created_at.desc()).limit(data.limit)
@@ -95,7 +95,7 @@ async def apply_forget(data: ForgetApplyRequest, session: AsyncSession = Depends
     if not data.dry_run:
         by_id = {m.id: m for m in memories}
         for d in to_archive:
-            by_id[d["id"]].status = "archived"
+            by_id[d["id"]].status = MemoryStatus.ARCHIVED
         await session.commit()
 
     return {
@@ -260,7 +260,7 @@ async def dream_consolidate(data: DreamRequest, session: AsyncSession = Depends(
     只读取原始记忆生成摘要,不删除/修改原记忆(遗忘交给 forget_engine 单独处理)。
     """
     engine = get_dream_engine()
-    q = select(Memory).where(Memory.agent_id == data.agent_id, Memory.status == "active")
+    q = select(Memory).where(Memory.agent_id == data.agent_id, Memory.status == MemoryStatus.ACTIVE)
     q = q.order_by(Memory.created_at.desc()).limit(data.limit)
     result = await session.execute(q)
     memories = [
