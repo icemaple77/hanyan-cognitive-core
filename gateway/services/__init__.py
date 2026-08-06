@@ -1,16 +1,21 @@
 """Memory business logic service."""
 
+import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gateway.core.embeddings import embed_text
 from gateway.core.fts import tokenize_for_fts
 from gateway.core.rerank import RERANK_ENABLED, rerank as rerank_fn
 from gateway.core.rrf import reciprocal_rank_fusion
 from gateway.models import Memory
 from gateway.schemas.memory import MemoryCreate, MemoryUpdate, MemorySearch
+
+logger = logging.getLogger(__name__)
 
 # OpenClaw's tool_result_persist hook auto-logs every tool call's raw output as a
 # memory (importance=0.3 by default) — with thousands of these accumulated, they
@@ -21,16 +26,79 @@ from gateway.schemas.memory import MemoryCreate, MemoryUpdate, MemorySearch
 NOISE_TYPE = "tool_result"
 NOISE_IMPORTANCE_THRESHOLD = 0.5
 
+# Cosine distance below which a just-stored memory is considered "same topic"
+# as an existing active one of the same type/user/agent scope (see
+# _flag_stale_duplicates). Calibrated loosely — this is a lightweight staleness
+# heuristic, not true contradiction detection (see that method's docstring).
+STALE_DISTANCE_THRESHOLD = 0.25
+
 
 class MemoryService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
     async def create(self, data: MemoryCreate) -> Memory:
-        memory = Memory(**data.model_dump())
+        payload = data.model_dump()
+        # Server always computes its own embedding now (unified vector space —
+        # see gateway.core.embeddings / 体检报告 P0-1). A client-supplied vector
+        # would silently mix a different model's space into the same pgvector
+        # column and corrupt cosine-distance comparisons, so it's dropped here
+        # rather than trusted; the field stays in the schema only so existing
+        # callers that still pass it don't break.
+        payload.pop("embedding", None)
+        memory = Memory(**payload)
+        text = f"{memory.content}\n{memory.summary}".strip()
+        try:
+            memory.embedding = await asyncio.to_thread(embed_text, text)
+        except Exception:
+            logger.exception("embed_text failed for new memory — storing without embedding")
+
         self.session.add(memory)
         await self.session.flush()
+
+        if memory.embedding is not None and memory.status == "active":
+            try:
+                await self._flag_stale_duplicates(memory)
+            except Exception:
+                logger.exception("stale-duplicate flagging failed for memory %s", memory.id)
+
         return memory
+
+    async def _flag_stale_duplicates(self, memory: Memory) -> None:
+        """Tag older, highly-similar active memories of the same type/scope as ``stale``.
+
+        This is the lightweight half of the 体检报告 P1-3 ask ("矛盾/陈旧检测").
+        It is deliberately *not* contradiction detection — it has no notion of
+        negation or fact conflict, only embedding-space proximity, so "北京是
+        首都" and "北京不是首都" would both get flagged as the same topic. Real
+        contradiction detection needs a judgment call ("does B conflict with
+        A?"), which is a job for the existing local-model review pattern
+        (core/noise_filter_events.py's async Ollama judge on MEMORY_CREATED)
+        rather than a synchronous embedding-distance check on the write path —
+        proposed as follow-up work, not implemented here.
+
+        What this *does* do safely: when a new memory lands very close in
+        embedding space to an older one (same type/user/agent, distance below
+        ``STALE_DISTANCE_THRESHOLD``), the older memory gets a ``stale`` tag
+        appended. Both stay retrievable — nothing is deleted or hidden — so a
+        caller can filter/deprioritize ``stale`` results or just ignore the tag.
+        """
+        candidates = await self.semantic_search(
+            memory.embedding,
+            limit=5,
+            user_id=memory.user_id,
+            agent_id=memory.agent_id,
+            type=memory.type,
+            exclude_noise=False,
+        )
+        for old, distance in candidates:
+            if old.id == memory.id or distance > STALE_DISTANCE_THRESHOLD:
+                continue
+            if old.content.strip() == memory.content.strip():
+                continue  # exact resubmission, not a superseding fact
+            if "stale" not in (old.tags or []):
+                old.tags = [*(old.tags or []), "stale"]
+                await self.session.flush()
 
     async def search(self, query: MemorySearch) -> tuple[list[Memory], int]:
         stmt = select(Memory).where(Memory.status == "active")
@@ -199,9 +267,20 @@ class MemoryService:
         provenance beyond the plain :class:`Memory` row: ``memory``,
         ``rrf_score``, ``bm25_rank``/``bm25_score``, ``vector_rank``/
         ``vector_distance``, and (if reranked) ``rerank_score``.
+
+        If ``query`` is given but ``embedding`` is not, the query text is
+        embedded server-side (体检报告 P0-1 — callers, including the MCP tools
+        and the OpenClaw plugin, no longer need their own embedding model to
+        get a real vector branch; they just pass text).
         """
         bm25_results: list[tuple[Memory, float]] = []
         vector_results: list[tuple[Memory, float]] = []
+
+        if query and not embedding:
+            try:
+                embedding = await asyncio.to_thread(embed_text, query)
+            except Exception:
+                logger.exception("embed_text failed for hybrid_search query — falling back to BM25-only")
 
         if query:
             bm25_results = await self.keyword_search_bm25(

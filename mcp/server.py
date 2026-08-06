@@ -82,9 +82,9 @@ async def store_memory(
         summary: Optional short summary of the content.
         importance: Relevance score in [0, 1]. Defaults to 0.5.
         tags: Optional list of string tags.
-        embedding: Optional precomputed embedding vector (1024-dim, Qwen3-Embedding-0.6B).
-            HCC itself has no GPU/embedding model — pass this if your client can compute
-            embeddings, otherwise this memory will only be findable via keyword/recall search.
+        embedding: Deprecated, ignored. The server always computes its own embedding
+            (ollama, server-side) so every memory lands in the same vector space —
+            kept only so old callers that still pass one don't break.
     """
     return await memory_tools.store_memory(
         content=content, user_id=user_id, agent_id=agent_id, type=type,
@@ -137,7 +137,8 @@ async def recall(
 
 @mcp.tool()
 async def semantic_search(
-    embedding: list[float],
+    query: str = "",
+    embedding: list[float] | None = None,
     user_id: str | None = None,
     agent_id: str | None = None,
     type: str | None = None,
@@ -145,18 +146,20 @@ async def semantic_search(
 ) -> dict:
     """Semantic-similarity search over stored memories (pgvector cosine distance).
 
-    Requires a precomputed embedding vector — HCC has no GPU/embedding model itself.
-    Compute the query embedding on your side (Qwen3-Embedding-0.6B, 1024-dim) and pass it here.
+    Pass free-text `query` — the server embeds it (ollama, server-side) before
+    searching. `embedding` remains available for passing a precomputed vector
+    directly, but is no longer required.
 
     Args:
-        embedding: Query embedding vector (required, 1024-dim).
+        query: Free-text query, embedded server-side. Required unless `embedding` is given.
+        embedding: Precomputed query embedding vector, advanced/optional.
         user_id: Restrict to a specific user.
         agent_id: Restrict to a specific agent's memories.
         type: Restrict to a specific memory type (e.g. "knowledge" for the Obsidian vault).
         limit: Max number of results (1-100). Defaults to 10.
     """
     return await memory_tools.semantic_search(
-        embedding=embedding, user_id=user_id, agent_id=agent_id, type=type, limit=limit
+        query=query, embedding=embedding, user_id=user_id, agent_id=agent_id, type=type, limit=limit
     )
 
 
@@ -173,16 +176,18 @@ async def hybrid_search(
     """Hybrid search: BM25 full-text + vector similarity, fused with Reciprocal Rank Fusion.
 
     Best default choice for "find memories about X" — combines exact keyword
-    matches (BM25, no embedding needed) with semantic similarity (if you pass
-    an embedding), so it doesn't miss relevant memories that use different
-    words than the query. Provide at least one of query/embedding; providing
-    only one degrades gracefully to pure-BM25 or pure-vector search.
+    matches (BM25) with semantic similarity, so it doesn't miss relevant
+    memories that use different words than the query (e.g. "显卡" vs "GPU").
+    Passing just `query` runs both branches — the server embeds the query text
+    itself (ollama, server-side) for the vector branch, no client-side
+    embedding model needed. Provide at least one of query/embedding.
 
     Args:
-        query: Free-text query for the BM25 branch (jieba-segmented server-side,
-            works for mixed Chinese/English content). Optional.
-        embedding: Precomputed query embedding (1024-dim, Qwen3-Embedding-0.6B)
-            for the vector branch. Optional.
+        query: Free-text query. Drives the BM25 branch (jieba-segmented
+            server-side) and, unless `embedding` is given, is also embedded
+            server-side for the vector branch. Optional if embedding is given.
+        embedding: Precomputed query embedding for the vector branch, advanced/
+            optional — normally you just pass `query` and let the server embed it.
         user_id: Restrict to a specific user.
         agent_id: Restrict to a specific agent's memories.
         type: Restrict to a specific memory type.

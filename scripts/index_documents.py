@@ -21,13 +21,14 @@ notes. ``EXCLUDE_DIRS`` keeps Archive/backup/Obsidian-internal directories out
 of the index (physically-external archive material and full-vault backups
 have no business being retrieval candidates).
 
-Embeddings are OFF by default. HCC has no real embedding model available
-server-side (see ``mcp/memory_tools.py`` for why) — ``gateway.core.embeddings``
-falls back to a hash placeholder that is a different, incompatible vector
-space from real Qwen3-Embedding vectors. Passing ``--embed`` only computes
-anything when ``HCC_EMBEDDING_PROVIDER`` is set to something other than
-``hash``; otherwise it's a no-op and a warning is printed once. BM25 (jieba +
-tsvector) works unconditionally either way.
+Embeddings are OFF by default (``--embed`` opt-in) even though the server can
+now compute real ones (``gateway.core.embeddings``, HCC_EMBEDDING_PROVIDER=
+ollama as of 2026-08 — see 体检报告 P0-1) — indexing thousands of files is a
+lot of extra ollama calls for a one-off batch job, so it stays explicit. If
+``HCC_EMBEDDING_PROVIDER`` is still ``hash`` (lexical placeholder, not real
+semantic search), ``--embed`` is a no-op with a one-time warning rather than
+silently writing incompatible vectors. BM25 (jieba + tsvector) works
+unconditionally either way.
 
 PDF files (``*.pdf``) are indexed alongside markdown by default, via
 ``pdf_inspector`` (see ``scanner.parser.parse_pdf_file``). PDFs have no

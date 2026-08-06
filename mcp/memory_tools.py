@@ -11,14 +11,16 @@ pgvector 列会让语义检索的余弦距离比较失真),而且原版 import �
 在 gateway 侧修的所有 bug(agent_id 过滤、时区、中文去重、情感关键词等)
 对 MCP 这条路自动生效,不会分裂出第二套不同步的实现。
 
-嵌入:HCC 跑在 aicore(无 GPU/MLX),算不出真嵌入。``store_memory``/
-``semantic_search`` 都改成"调用方可选传入预计算好的向量"(和 REST API 的
-``/memory/store`` 一致),不再自己伪造一个哈希向量出来污染同一列——
-没传向量就诚实地只能被关键词/三层检索找到,好过悄悄存一个不兼容的假向量。
+嵌入(2026-08 更新,体检报告 P0-1):服务端现在用 ollama(gateway/core/
+embeddings.py,HCC_EMBEDDING_PROVIDER=ollama)自己算嵌入,``store_memory``
+写入时总是服务端算向量,不再信任调用方传入的向量(避免不同模型的向量空间
+混进同一 pgvector 列)。``semantic_search``/``hybrid_search`` 传文本 query
+即可,服务端顺带把它也嵌入用于向量分支——调用方不需要自己有嵌入模型了。
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any, Optional
 
@@ -82,8 +84,8 @@ async def store_memory(
 ) -> dict[str, Any]:
     """Store a new memory.
 
-    embedding: 可选。调用方(有嵌入模型的一端,例如接了 Mac 侧 Qwen3-Embedding
-    的客户端)可以预先算好向量传进来;不传就只能被关键词/三层检索找到。
+    embedding: 已废弃,保留参数只是不破坏老调用方——服务端总是自己重算向量
+    (见模块顶部说明),这里传什么都会被忽略。
     """
     try:
         if not content or not content.strip():
@@ -155,17 +157,22 @@ async def recall(
 
 
 async def semantic_search(
-    embedding: list[float],
+    query: str = "",
+    embedding: Optional[list[float]] = None,
     user_id: Optional[str] = None,
     agent_id: Optional[str] = None,
     type: Optional[str] = None,
     limit: int = 10,
 ) -> dict[str, Any]:
-    """语义相似度检索(pgvector cosine)。需要调用方传入预计算好的向量——
-    HCC 自己算不出来(aicore 没有 GPU/MLX)。"""
+    """语义相似度检索(pgvector cosine)。2026-08 起服务端自带 embedding(ollama,见
+    gateway/core/embeddings.py)——传 query 文本即可,服务端算向量;仍支持传
+    embedding 走高级/自定义向量的路径,两者都不给才报错。"""
     try:
         if not embedding:
-            return _err("embedding is required — HCC 不能自己计算向量,调用方需预先算好传入")
+            if not query:
+                return _err("must provide query text (embedded server-side) or a precomputed embedding")
+            from gateway.core.embeddings import embed_text
+            embedding = await asyncio.to_thread(embed_text, query)
         limit = max(1, min(100, int(limit)))
         async with async_session() as session:
             service = MemoryService(session)

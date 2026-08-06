@@ -10,10 +10,9 @@ from pgvector.sqlalchemy import Vector
 from gateway.core.database import Base
 from gateway.core.fts import build_search_text, tokenize_for_fts
 
-# Dimensionality of the stored embeddings. 768 matches common sentence-embedding
-# models (e.g. all-mpnet-base-v2, nomic-embed-text). Keep in sync with the value
-# used by the embedding provider in gateway.core.embeddings.
-EMBEDDING_DIM = 1024  # Qwen3-Embedding-0.6B 原生维度(2026-08 接入,0条历史数据用旧768维,无迁移负担)
+# Dimensionality of the stored embeddings. Keep in sync with HCC_EMBEDDING_DIM
+# (gateway.core.embeddings) and whatever HCC_EMBEDDING_MODEL actually produces.
+EMBEDDING_DIM = 768  # nomic-embed-text 原生维度(2026-08 切到 ollama 服务端计算,0条历史数据,无迁移负担)
 
 
 class MemoryStatus(StrEnum):

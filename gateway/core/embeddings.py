@@ -16,6 +16,18 @@ import re
 import os
 from typing import Optional
 
+from dotenv import load_dotenv
+
+# Unlike gateway.core.config.Settings (pydantic BaseSettings, which parses its
+# own env_file), this module reads os.getenv() directly — nothing else in the
+# process was loading .env into the real environment, so every HCC_EMBEDDING_*
+# setting silently fell back to its hardcoded default (provider=hash) no
+# matter what .env said. That's the actual root cause behind 体检报告's
+# "Embedding 默认是 hash 后端" finding — this call is the fix, not just the
+# .env value change. load_dotenv() no-ops quietly if no .env is found, and
+# never overrides variables already set in the real environment.
+load_dotenv()
+
 __all__ = ["embed_text", "EMBEDDING_DIM"]
 
 # Configuration

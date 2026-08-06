@@ -5,9 +5,15 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+
+# Must run before any HCC module import — several modules (gateway.core.embeddings
+# in particular) read os.getenv() directly rather than through pydantic Settings'
+# own env_file parsing, so without this they silently ignore .env entirely.
+load_dotenv()
 
 from core.config import core_settings
 from core.dream import DreamEngine
