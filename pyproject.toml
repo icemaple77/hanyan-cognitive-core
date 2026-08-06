@@ -34,6 +34,12 @@ dev = [
 rerank = [
     "llama-cpp-python>=0.3.0",
 ]
+# Optional PDF ingestion for scripts/index_documents.py (scanner.parser.parse_pdf_file).
+# Rust-backed (via PyO3 bindings) — not installed by default, markdown indexing
+# works fully without it; set HCC_INDEX_PDF=0 to disable PDF indexing outright.
+pdf = [
+    "pdf-inspector>=0.2.6",
+]
 
 [build-system]
 requires = ["setuptools>=75.0"]

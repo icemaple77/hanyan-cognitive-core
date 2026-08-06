@@ -28,6 +28,14 @@ space from real Qwen3-Embedding vectors. Passing ``--embed`` only computes
 anything when ``HCC_EMBEDDING_PROVIDER`` is set to something other than
 ``hash``; otherwise it's a no-op and a warning is printed once. BM25 (jieba +
 tsvector) works unconditionally either way.
+
+PDF files (``*.pdf``) are indexed alongside markdown by default, via
+``pdf_inspector`` (see ``scanner.parser.parse_pdf_file``). PDFs have no
+frontmatter, so their extracted markdown becomes ``content`` directly and
+their title comes from PDF metadata (falling back to the filename). PDFs
+with no extractable text layer (scanned/image-based, per pdf_inspector's
+classification) are skipped and counted separately — never treated as
+errors. Set ``HCC_INDEX_PDF=0`` to disable PDF indexing entirely.
 """
 
 from __future__ import annotations
@@ -43,7 +51,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scanner.parser import parse_file  # noqa: E402
+from scanner.parser import parse_file, parse_pdf_file, PdfSkipped  # noqa: E402
 from gateway.core.database import async_session  # noqa: E402
 from gateway.services.document_service import DocumentService  # noqa: E402
 
@@ -73,34 +81,51 @@ DEFAULT_COLLECTIONS = {
     "aicore": "~/workspace/AICore",
 }
 
+# On by default; set HCC_INDEX_PDF=0 to index markdown only.
+INDEX_PDF = os.environ.get("HCC_INDEX_PDF", "1").strip().lower() not in ("0", "false", "no", "")
 
-def iter_markdown_files(root: Path):
+
+def iter_indexable_files(root: Path):
+    suffixes = (".md", ".pdf") if INDEX_PDF else (".md",)
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
         for name in filenames:
-            if name.lower().endswith(".md"):
+            if name.lower().endswith(suffixes):
                 yield Path(dirpath) / name
 
 
 async def index_collection(collection: str, root: Path, *, embed: bool, embed_warned: list[bool]) -> dict:
     if not root.exists():
         logger.warning("[%s] root does not exist, skipping: %s", collection, root)
-        return {"collection": collection, "found": 0, "changed": 0, "skipped": 0, "deleted": 0, "errors": 0}
+        return {
+            "collection": collection, "found": 0, "changed": 0, "skipped": 0,
+            "skipped_pdf": 0, "deleted": 0, "errors": 0,
+        }
 
-    found = changed = skipped = errors = 0
+    found = changed = skipped = skipped_pdf = errors = 0
     keep_paths: set[str] = set()
 
     async with async_session() as session:
         service = DocumentService(session)
 
-        for path in iter_markdown_files(root):
+        for path in iter_indexable_files(root):
             found += 1
             rel = path.relative_to(root).as_posix()
             keep_paths.add(rel)
             try:
                 raw = path.read_bytes()
                 content_hash = hashlib.sha256(raw).hexdigest()
-                doc = parse_file(path)
+
+                if path.suffix.lower() == ".pdf":
+                    try:
+                        doc = parse_pdf_file(path)
+                    except PdfSkipped as exc:
+                        skipped_pdf += 1
+                        logger.info("[%s] skipping %s: %s", collection, rel, exc)
+                        continue
+                else:
+                    doc = parse_file(path)
+
                 mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).replace(tzinfo=None)
 
                 embedding = None
@@ -144,12 +169,13 @@ async def index_collection(collection: str, root: Path, *, embed: bool, embed_wa
         "found": found,
         "changed": changed,
         "skipped": skipped,
+        "skipped_pdf": skipped_pdf,
         "deleted": deleted,
         "errors": errors,
     }
     logger.info(
-        "[%s] found=%d changed=%d skipped=%d deleted=%d errors=%d",
-        collection, found, changed, skipped, deleted, errors,
+        "[%s] found=%d changed=%d skipped=%d skipped_pdf=%d deleted=%d errors=%d",
+        collection, found, changed, skipped, skipped_pdf, deleted, errors,
     )
     return result
 

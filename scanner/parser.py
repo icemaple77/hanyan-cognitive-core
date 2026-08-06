@@ -20,6 +20,11 @@ try:
 except ImportError:  # pragma: no cover - yaml is optional
     yaml = None  # type: ignore
 
+try:
+    import pdf_inspector  # type: ignore
+except ImportError:  # pragma: no cover - pdf_inspector is optional
+    pdf_inspector = None  # type: ignore
+
 
 # Matches a leading frontmatter block: "---\n...\n---\n".
 _FRONTMATTER_RE = re.compile(
@@ -156,3 +161,58 @@ def parse_file(path: Path) -> ParsedDocument:
     """
     text = path.read_text(encoding="utf-8", errors="replace")
     return parse_markdown(text, fallback_title=path.stem)
+
+
+# pdf_inspector classifies a PDF as one of these four types. Only
+# "text_based" and "mixed" carry an extractable text layer that
+# pdf_inspector.process_pdf() turns into markdown; "scanned" and
+# "image_based" PDFs have no text layer (would need OCR) and produce no
+# markdown, so they are not indexable as-is.
+_PDF_INDEXABLE_TYPES = {"text_based", "mixed"}
+
+
+class PdfSkipped(Exception):
+    """Raised by :func:`parse_pdf_file` for a PDF with no extractable text.
+
+    Callers (the indexer) should catch this and skip the file rather than
+    treating it as an error — a scanned/image-based PDF is expected input,
+    not a failure.
+    """
+
+    def __init__(self, pdf_type: str, page_count: int):
+        self.pdf_type = pdf_type
+        self.page_count = page_count
+        super().__init__(f"no extractable text layer (pdf_type={pdf_type}, pages={page_count})")
+
+
+def parse_pdf_file(path: Path) -> ParsedDocument:
+    """Extract and parse the PDF file at *path* into a :class:`ParsedDocument`.
+
+    Uses ``pdf_inspector`` (Rust-backed) to classify the PDF and convert its
+    text layer to markdown. PDFs have no frontmatter, so ``metadata`` instead
+    carries the ``pdf_type``/``page_count`` classification.
+
+    Args:
+        path: Filesystem path to a PDF file.
+
+    Raises:
+        RuntimeError: if the ``pdf_inspector`` package is not installed.
+        PdfSkipped: if the PDF has no extractable text layer (scanned or
+            image-based) — there is nothing to index.
+    """
+    if pdf_inspector is None:
+        raise RuntimeError("pdf_inspector is not installed; run `pip install pdf-inspector`")
+
+    result = pdf_inspector.process_pdf(str(path))
+    if result.pdf_type not in _PDF_INDEXABLE_TYPES or not result.markdown:
+        raise PdfSkipped(result.pdf_type, result.page_count)
+
+    title = str(result.title or "").strip() or path.stem
+    content = result.markdown.strip()
+
+    return ParsedDocument(
+        title=title,
+        content=content,
+        tags=[],
+        metadata={"pdf_type": result.pdf_type, "page_count": result.page_count},
+    )
