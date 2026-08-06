@@ -12,7 +12,7 @@ from gateway.core.fts import build_search_text, tokenize_for_fts
 
 # Dimensionality of the stored embeddings. Keep in sync with HCC_EMBEDDING_DIM
 # (gateway.core.embeddings) and whatever HCC_EMBEDDING_MODEL actually produces.
-EMBEDDING_DIM = 768  # nomic-embed-text 原生维度(2026-08 切到 ollama 服务端计算,0条历史数据,无迁移负担)
+EMBEDDING_DIM = 1024  # qwen3-embedding:0.6b 原生维度(2026-08 从 nomic-embed-text/768 迁移,见 memories/documents 列迁移记录)
 
 
 class MemoryStatus(StrEnum):

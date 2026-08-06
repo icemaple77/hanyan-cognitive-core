@@ -24,7 +24,7 @@ from typing import Any
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy import String, cast, func, select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from core.providers.base import (
@@ -40,6 +40,7 @@ from core.providers.base import (
 from gateway.core.database import async_session
 from gateway.core.embeddings import embed_text
 from gateway.models import Memory, MemoryStatus
+from gateway.services import MemoryService
 
 logger = logging.getLogger(__name__)
 
@@ -104,14 +105,37 @@ class MemoryProvider(Provider):
     # Search
     # ------------------------------------------------------------------
     async def search(self, query: SearchQuery) -> SearchResult:
-        """Keyword/tag search over active memories, newest first.
+        """Hybrid (BM25 + vector) search over active memories, or a plain
+        recency listing when ``query.query`` is empty.
 
-        The free-text ``query`` is matched (case-insensitively) against the
-        memory ``content``, ``summary`` and serialised ``tags``. Optional
-        ``user_id`` and ``type`` narrow the result set. Only ``active``
-        memories are returned.
+        A non-empty ``query.query`` is delegated to
+        :meth:`~gateway.services.MemoryService.hybrid_search`, which embeds
+        the text server-side and fuses full-text (jieba-segmented BM25) and
+        pgvector cosine-similarity branches with Reciprocal Rank Fusion. This
+        is what lets a long free-text sentence — not just an exact
+        substring — surface semantically related memories; a plain ``ilike``
+        scan of the whole query string against ``content``/``summary``
+        virtually never matches once the query is more than a couple of
+        words. Optional ``user_id`` and ``type`` narrow the result set in
+        both branches.
+
+        An empty ``query.query`` keeps the previous newest-first listing
+        (used by :meth:`MemoryManager.get_context`), since there is no
+        keyword/vector signal to rank against.
         """
         async with self._session_factory() as session:
+            if query.query:
+                fused = await MemoryService(session).hybrid_search(
+                    query=query.query,
+                    limit=query.limit,
+                    user_id=query.user_id,
+                    type=query.type,
+                )
+                items = [_memory_to_dict(item["memory"]) for item in fused]
+                return SearchResult(
+                    items=items, total=len(items), provider=self.name
+                )
+
             stmt = select(Memory).where(Memory.status == MemoryStatus.ACTIVE)
             count_stmt = select(func.count(Memory.id)).where(
                 Memory.status == MemoryStatus.ACTIVE
@@ -123,17 +147,6 @@ class MemoryProvider(Provider):
             if query.type:
                 stmt = stmt.where(Memory.type == query.type)
                 count_stmt = count_stmt.where(Memory.type == query.type)
-            if query.query:
-                like = f"%{query.query}%"
-                # Keyword + tag filter: match content, summary or any tag
-                # (tags are JSON, cast to text so ilike can scan them).
-                predicate = (
-                    Memory.content.ilike(like)
-                    | Memory.summary.ilike(like)
-                    | cast(Memory.tags, String).ilike(like)
-                )
-                stmt = stmt.where(predicate)
-                count_stmt = count_stmt.where(predicate)
 
             stmt = (
                 stmt.order_by(Memory.created_at.desc())
@@ -258,6 +271,6 @@ class MemoryProvider(Provider):
         return ProviderMetadata(
             name=self.name,
             version=self.version,
-            capabilities=["search", "store", "update", "delete", "embedding"],
+            capabilities=["search", "hybrid_search", "store", "update", "delete", "embedding"],
             config={"backend": self._settings.memory_provider},
         )

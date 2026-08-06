@@ -33,6 +33,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from core.config import CoreSettings, core_settings
+from gateway.core.fts import tokenize_for_fts
 from core.providers.base import (
     HealthStatus,
     Provider,
@@ -239,12 +240,18 @@ class KnowledgeQMDProvider(Provider):
     async def search(self, query: SearchQuery) -> SearchResult:
         """Search knowledge documents by heading/content (and optional type).
 
-        Matching is a case-insensitive substring test against each document's
-        top-level heading and body. An empty ``query`` lists everything.
-        Results are paginated with ``offset``/``limit``.
+        The query is jieba-segmented (same tokenizer used for memory BM25,
+        see :mod:`gateway.core.fts`) and a document matches if *any* token
+        appears in its heading/body. A whole-sentence ``ilike`` substring
+        test (the previous behaviour) virtually never matches once the query
+        is a full sentence rather than a single word/phrase copied verbatim
+        from a document — segmenting first is what lets long free-text
+        queries still surface relevant notes. Results are ranked by token
+        hit count (most matching tokens first), then paginated with
+        ``offset``/``limit``. An empty ``query`` lists everything.
         """
-        needle = (query.query or "").strip().lower()
-        matches: list[dict[str, Any]] = []
+        tokens = tokenize_for_fts(query.query or "").split()
+        matches: list[tuple[int, dict[str, Any]]] = []
         for path in self._iter_docs():
             try:
                 item = self._parse(path)
@@ -255,14 +262,19 @@ class KnowledgeQMDProvider(Provider):
                 continue
             if query.user_id and str(item.get("user_id")) != str(query.user_id):
                 continue
-            if needle:
+            if tokens:
                 haystack = f"{item['heading']}\n{item['content']}".lower()
-                if needle not in haystack:
+                hits = sum(1 for tok in tokens if tok.lower() in haystack)
+                if not hits:
                     continue
-            matches.append(item)
+                matches.append((hits, item))
+            else:
+                matches.append((0, item))
 
-        total = len(matches)
-        page = matches[query.offset : query.offset + query.limit]
+        matches.sort(key=lambda pair: pair[0], reverse=True)
+        ordered = [item for _, item in matches]
+        total = len(ordered)
+        page = ordered[query.offset : query.offset + query.limit]
         return SearchResult(items=page, total=total, provider=self.name)
 
     # ------------------------------------------------------------------
