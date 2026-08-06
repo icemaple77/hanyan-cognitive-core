@@ -1,5 +1,7 @@
 # HCC — Hanyan Cognitive Core（含烟认知核心）
 
+[English](README.en.md) | [中文](README.md)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Works with OpenClaw](https://img.shields.io/badge/works%20with-OpenClaw-blue)
 ![Works with Hermes](https://img.shields.io/badge/works%20with-Hermes-blue)
@@ -36,6 +38,8 @@ HCC 内置一套 **6 维情绪引擎**：happiness（愉悦）/ curiosity（好�
 ---
 
 ## 架构
+
+![HCC 架构图](docs/assets/architecture.png)
 
 ```
                          ┌─────────────────────────────┐
