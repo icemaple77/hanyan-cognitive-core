@@ -100,6 +100,40 @@ class GraphEngine:
             })
         return edges
 
+    async def export_mermaid(self) -> str:
+        """Render the whole graph as Mermaid ``graph LR`` flowchart syntax.
+
+        Every entity is a node (id ``n<uuid-without-dashes>`` — Mermaid node
+        ids can't contain ``-``), labeled with its name; every relation is an
+        edge labeled with its ``relation_type``. Entities with no relations
+        still get a standalone node line so nothing is silently dropped from
+        the export. Relations pointing at an entity that no longer exists
+        (should not happen via the API, but nothing enforces the FK at the DB
+        level) are skipped rather than emitting a dangling edge.
+        """
+        entities = list((await self.session.execute(select(Entity))).scalars().all())
+        relations = list((await self.session.execute(select(Relation))).scalars().all())
+        entity_ids = {e.id for e in entities}
+
+        def node_id(entity_id: str) -> str:
+            return "n" + entity_id.replace("-", "")
+
+        def escape(label: str) -> str:
+            cleaned = (label or "").replace('"', "'").replace("[", "(").replace("]", ")")
+            cleaned = cleaned.replace("|", "/").replace("\n", " ").strip()
+            return cleaned or "?"
+
+        lines = ["graph LR"]
+        for entity in entities:
+            lines.append(f'    {node_id(entity.id)}["{escape(entity.name)}"]')
+        for rel in relations:
+            if rel.source_id not in entity_ids or rel.target_id not in entity_ids:
+                continue
+            lines.append(
+                f"    {node_id(rel.source_id)} -->|{escape(rel.relation_type)}| {node_id(rel.target_id)}"
+            )
+        return "\n".join(lines)
+
     async def query(self, entity_name: str, depth: int = 1) -> dict[str, Any]:
         """Query graph: find entity and its relations up to depth."""
         entities = await self.find_entity(entity_name)

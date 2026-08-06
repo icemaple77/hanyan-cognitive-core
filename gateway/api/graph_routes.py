@@ -1,6 +1,6 @@
 """Knowledge Graph API routes."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.database import get_session
@@ -8,6 +8,25 @@ from core.graph import GraphEngine, Entity, Relation
 from pydantic import BaseModel, Field
 
 router = APIRouter()
+
+_MERMAID_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>HCC Knowledge Graph</title>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({{ startOnLoad: true, theme: "dark" }});
+</script>
+<style>body {{ background: #1e1e2e; color: #cdd6f4; font-family: sans-serif; }}</style>
+</head>
+<body>
+<pre class="mermaid">
+{mermaid}
+</pre>
+</body>
+</html>
+"""
 
 
 class EntityCreate(BaseModel):
@@ -50,6 +69,21 @@ async def query_graph(data: GraphQuery, session: AsyncSession = Depends(get_sess
     if not result.get("found"):
         raise HTTPException(status_code=404, detail=f"Entity '{data.entity_name}' not found")
     return result
+
+
+@router.get("/graph/export", summary="Export the knowledge graph as Mermaid or a standalone HTML viewer")
+async def export_graph(format: str = "mermaid", session: AsyncSession = Depends(get_session)):
+    """体检报告 P1-5. ``format=mermaid`` (default) returns raw ``graph LR``
+    text (paste into https://mermaid.live or any Mermaid-rendering client);
+    ``format=html`` wraps it in a self-contained page that renders it via the
+    Mermaid CDN script in-browser — no local Mermaid install needed."""
+    if format not in ("mermaid", "html"):
+        raise HTTPException(status_code=400, detail="format must be 'mermaid' or 'html'")
+    engine = GraphEngine(session)
+    mermaid = await engine.export_mermaid()
+    if format == "html":
+        return Response(content=_MERMAID_HTML_TEMPLATE.format(mermaid=mermaid), media_type="text/html")
+    return Response(content=mermaid, media_type="text/plain")
 
 
 @router.get("/graph/entity/{entity_id}", summary="Get entity details")

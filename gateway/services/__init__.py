@@ -9,10 +9,11 @@ from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.embeddings import embed_text
+from gateway.core.events import publish_conflict_event
 from gateway.core.fts import tokenize_for_fts
 from gateway.core.rerank import RERANK_ENABLED, rerank as rerank_fn
 from gateway.core.rrf import reciprocal_rank_fusion
-from gateway.models import Memory
+from gateway.models import Memory, MemoryConflict
 from gateway.schemas.memory import MemoryCreate, MemoryUpdate, MemorySearch
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,18 @@ class MemoryService:
         ``STALE_DISTANCE_THRESHOLD``), the older memory gets a ``stale`` tag
         appended. Both stay retrievable — nothing is deleted or hidden — so a
         caller can filter/deprioritize ``stale`` results or just ignore the tag.
+
+        Each flag is also recorded as a :class:`~gateway.models.MemoryConflict`
+        row (durable, queryable audit trail — "what got superseded and when")
+        and published as a ``MEMORY_CONFLICT`` event on the shared EventBus
+        (real-time, same channel store/update/delete already use). Both are
+        best-effort: a DB or Redis hiccup here must not fail the store request
+        that triggered it.
+
+        Scope is deliberately narrow to keep this a write-path check, not a
+        full scan: at most 5 nearest neighbors, restricted to the same
+        user/agent/type as the new memory (an existing ivfflat/hnsw-backed
+        ANN query, not a table scan) — see ``semantic_search``.
         """
         candidates = await self.semantic_search(
             memory.embedding,
@@ -98,7 +111,19 @@ class MemoryService:
                 continue  # exact resubmission, not a superseding fact
             if "stale" not in (old.tags or []):
                 old.tags = [*(old.tags or []), "stale"]
+                self.session.add(MemoryConflict(
+                    old_memory_id=old.id,
+                    new_memory_id=memory.id,
+                    distance=distance,
+                    user_id=memory.user_id,
+                    agent_id=memory.agent_id,
+                    type=memory.type,
+                ))
                 await self.session.flush()
+                await publish_conflict_event(
+                    old.id, memory.id, distance,
+                    user_id=memory.user_id, agent_id=memory.agent_id, type=memory.type,
+                )
 
     async def search(self, query: MemorySearch) -> tuple[list[Memory], int]:
         stmt = select(Memory).where(Memory.status == "active")

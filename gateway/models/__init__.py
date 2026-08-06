@@ -150,6 +150,31 @@ class DreamSignal(Base):
     )
 
 
+class MemoryConflict(Base):
+    """Audit trail for the P1-3 write-path staleness check — one row per
+    (old, new) pair the check in ``gateway.services._flag_stale_duplicates``
+    flags as same-topic/likely-superseded.
+
+    Satellite table, same pattern as :class:`DreamSignal`: it never mutates
+    the old ``Memory`` row beyond the ``stale`` tag already applied by the
+    caller, it just records *that* the flag happened (and why — the cosine
+    distance) so "what got superseded recently" is a query instead of a scan
+    over every memory's tags.
+    """
+
+    __tablename__ = "memory_conflicts"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    old_memory_id = Column(String(36), nullable=False, index=True)
+    new_memory_id = Column(String(36), nullable=False, index=True)
+    distance = Column(Float, nullable=False)
+    user_id = Column(String(128), index=True, nullable=False)
+    agent_id = Column(String(64), index=True, default="default")
+    type = Column(String(64), default="general")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+                        nullable=False, index=True)
+
+
 class EmotionSnapshot(Base):
     """Deep-phase daily cold snapshot of the emotion state (docs/emotion-design.md 2.6).
 

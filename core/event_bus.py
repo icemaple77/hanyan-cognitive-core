@@ -58,6 +58,7 @@ class EventType(str, Enum):
     MEMORY_CREATED = "memory.created"
     MEMORY_UPDATED = "memory.updated"
     MEMORY_DELETED = "memory.deleted"
+    MEMORY_CONFLICT = "memory.conflict"
     KNOWLEDGE_MERGED = "knowledge.merged"
     EMOTION_CHANGED = "emotion.changed"
     DREAM_FINISHED = "dream.finished"
@@ -140,6 +141,14 @@ class MemoryDeleted(Event):
 
 
 @dataclass
+class MemoryConflictDetected(Event):
+    """Emitted when a write-path staleness check flags an older memory as
+    likely superseded by a just-stored one (体检报告 P1-3)."""
+
+    event_type: EventType = EventType.MEMORY_CONFLICT
+
+
+@dataclass
 class KnowledgeMerged(Event):
     """Emitted when memories/knowledge fragments are merged."""
 
@@ -164,6 +173,7 @@ _EVENT_CLASSES: dict[EventType, type[Event]] = {
     EventType.MEMORY_CREATED: MemoryCreated,
     EventType.MEMORY_UPDATED: MemoryUpdated,
     EventType.MEMORY_DELETED: MemoryDeleted,
+    EventType.MEMORY_CONFLICT: MemoryConflictDetected,
     EventType.KNOWLEDGE_MERGED: KnowledgeMerged,
     EventType.EMOTION_CHANGED: EmotionChanged,
     EventType.DREAM_FINISHED: DreamFinished,

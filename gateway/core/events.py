@@ -49,3 +49,25 @@ async def publish_memory_event(action: str, memory_id: str, **extra: Any) -> Non
         logger.warning(
             "Failed to publish memory event action=%s memory_id=%s", action, memory_id, exc_info=True
         )
+
+
+async def publish_conflict_event(old_memory_id: str, new_memory_id: str, distance: float, **extra: Any) -> None:
+    """Best-effort publish of a stale/conflict flag (体检报告 P1-3).
+
+    Fired alongside the ``MemoryConflict`` audit row written by
+    :meth:`gateway.services.MemoryService._flag_stale_duplicates` — the DB
+    row is the durable record, this is the real-time notification (visible
+    on ``GET /api/v1/events/stream`` same as store/update/delete). Never
+    raises, same rationale as :func:`publish_memory_event`.
+    """
+    try:
+        bus = get_event_bus()
+        await bus.connect()
+        await bus.publish_event(
+            EventType.MEMORY_CONFLICT,
+            {"old_memory_id": old_memory_id, "new_memory_id": new_memory_id, "distance": distance, **extra},
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Failed to publish conflict event old=%s new=%s", old_memory_id, new_memory_id, exc_info=True
+        )
