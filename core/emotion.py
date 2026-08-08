@@ -1,16 +1,22 @@
 """Emotion Engine v2 — internal state for the AI companion.
 
 Maintains dimensional emotional state that updates based on conversation,
-memory and dream events (docs/emotion-design.md). Dimensions: happiness,
-curiosity, fatigue, worry, closeness, focus.
+memory and dream events (docs/emotion-design.md). 17 dims: the original 6
+(happiness/curiosity/fatigue/worry/closeness/focus) plus 11 added for soul
+v0.2 (docs/09-soul模型化讨论.md): sadness/anger/jealousy/shyness/tenderness/
+loneliness/playfulness/anxiety/excitement/arousal/ecstasy.
 
-Layered on top of the six dimensions (unchanged from v1):
+Layered on top of the dimensions:
 
 * A named-state machine (2.2) that reads the continuous dimensions and
   resolves them to one human-readable composite label ("雀跃"/"低落"/...),
   each carrying display metadata (color/icon) and expression guidance.
-* Importance-scaled, negation-aware triggers (2.1 T1/T3) instead of v1's flat
-  keyword substring matching.
+* Two interchangeable perception sources feed dimension shifts:
+  :meth:`EmotionEngine.update_neural` calls the soul_encoder HTTP service
+  (trained model, all 17 dims) and falls back to :meth:`EmotionEngine.update`
+  (importance-scaled, negation-aware T3 keyword matching, 2.1) when that
+  service is disabled/unreachable — either way, state transition (decay,
+  clamping, named-state derivation) stays in this rule layer.
 * A decay *baseline* that dream Deep-phase runs can nudge (2.5 T2) instead of
   always regressing to the fixed ``DEFAULT_STATE``.
 * Optional Redis persistence (2.6 layer 1) so state survives a gateway
@@ -21,6 +27,7 @@ Layered on top of the six dimensions (unchanged from v1):
 
 from __future__ import annotations
 
+import itertools
 import logging
 from collections import Counter
 from datetime import datetime, timezone
@@ -30,7 +37,14 @@ from core.config import CoreSettings, core_settings
 
 logger = logging.getLogger(__name__)
 
-# Emotional dimensions with default neutral values
+# Emotional dimensions with default neutral values. The first 6 are the
+# original v1/v2 dims (stable "mood" baseline). The 11 added for soul v0.2
+# (docs/09-soul模型化讨论.md) are transient/situational states with no
+# "neutral" resting level of their own (mirrors soul_encoder's
+# src/augment_dims.py: "新11维没有中性基线概念...未命中就是0") — defaulting
+# them to 0.0 means decay pulls them back to silence rather than some
+# invented baseline, which is what "jealousy"/"ecstasy" etc. should do
+# between triggers.
 DEFAULT_STATE: dict[str, float] = {
     "happiness": 0.6,
     "curiosity": 0.7,
@@ -38,6 +52,17 @@ DEFAULT_STATE: dict[str, float] = {
     "worry": 0.1,
     "closeness": 0.5,
     "focus": 0.6,
+    "sadness": 0.0,
+    "anger": 0.0,
+    "jealousy": 0.0,
+    "shyness": 0.0,
+    "tenderness": 0.0,
+    "loneliness": 0.0,
+    "playfulness": 0.0,
+    "anxiety": 0.0,
+    "excitement": 0.0,
+    "arousal": 0.0,
+    "ecstasy": 0.0,
 }
 
 # Keywords that trigger emotional shifts (v1 logic, kept as the T3 fallback —
@@ -90,6 +115,61 @@ EMOTION_TRIGGERS: dict[str, dict[str, float]] = {
     "放松": {"fatigue": -0.15, "happiness": 0.05},
 }
 
+# T3 fallback for the 11 dims added in soul v0.2 — used only when the neural
+# perception source (update_neural()) is disabled or unreachable. Mirrored
+# from soul_encoder's src/augment_dims.py NEW_TRIGGERS (the same table the
+# training data was labeled with), kept as a literal copy rather than a
+# cross-repo import since soul_encoder lives on a different machine/repo.
+NEW_DIM_TRIGGERS: dict[str, dict[str, float]] = {
+    "难过": {"sadness": 0.3}, "伤心": {"sadness": 0.35}, "心碎": {"sadness": 0.45},
+    "哭": {"sadness": 0.3}, "想哭": {"sadness": 0.35}, "泪流": {"sadness": 0.35},
+    "悲伤": {"sadness": 0.4}, "心酸": {"sadness": 0.3}, "难受": {"sadness": 0.25},
+    "痛苦": {"sadness": 0.4}, "崩溃": {"sadness": 0.4}, "失落": {"sadness": 0.3},
+    "心里堵": {"sadness": 0.3}, "心痛": {"sadness": 0.4}, "眼泪": {"sadness": 0.3},
+    "生气": {"anger": 0.4}, "愤怒": {"anger": 0.45}, "气死": {"anger": 0.45},
+    "不想理你": {"anger": 0.35, "sadness": 0.15}, "你再说一遍": {"anger": 0.45},
+    "够了": {"anger": 0.3}, "烦死了": {"anger": 0.3}, "滚": {"anger": 0.5},
+    "闭嘴": {"anger": 0.4}, "无语": {"anger": 0.25}, "火大": {"anger": 0.4},
+    "气炸了": {"anger": 0.45}, "不理你了": {"anger": 0.3, "sadness": 0.15},
+    "委屈": {"anger": 0.2, "sadness": 0.35}, "凭什么": {"anger": 0.35},
+    "怎么可以这样": {"anger": 0.3, "sadness": 0.15}, "不可理喻": {"anger": 0.35},
+    "吃醋": {"jealousy": 0.5}, "醋意": {"jealousy": 0.45}, "别的女生": {"jealousy": 0.35},
+    "别的男生": {"jealousy": 0.35}, "她是谁": {"jealousy": 0.4}, "他是谁": {"jealousy": 0.4},
+    "对她有意思": {"jealousy": 0.45}, "对他有意思": {"jealousy": 0.45}, "又跟别人": {"jealousy": 0.4},
+    "花心": {"jealousy": 0.35}, "劈腿": {"jealousy": 0.5}, "移情别恋": {"jealousy": 0.5},
+    "在意别人": {"jealousy": 0.3}, "把我放心上": {"jealousy": 0.25}, "心里有没有我": {"jealousy": 0.35},
+    "害羞": {"shyness": 0.45}, "脸红": {"shyness": 0.4}, "不好意思": {"shyness": 0.3},
+    "讨厌啦": {"shyness": 0.3}, "别这样看我": {"shyness": 0.4}, "羞死了": {"shyness": 0.45},
+    "好尴尬": {"shyness": 0.3}, "臊": {"shyness": 0.3}, "撩人家": {"shyness": 0.3},
+    "干嘛这样看我": {"shyness": 0.4}, "人家才不要": {"shyness": 0.3},
+    "心疼": {"tenderness": 0.5}, "别硬撑": {"tenderness": 0.4}, "手都磨破了": {"tenderness": 0.45},
+    "辛苦了": {"tenderness": 0.35}, "别逞强": {"tenderness": 0.35}, "让我看看": {"tenderness": 0.3},
+    "疼不疼": {"tenderness": 0.35}, "好好照顾自己": {"tenderness": 0.3}, "别太累着自己": {"tenderness": 0.35},
+    "早点休息": {"tenderness": 0.25}, "抱抱你": {"tenderness": 0.3},
+    "孤独": {"loneliness": 0.45}, "一个人": {"loneliness": 0.3}, "好想有人陪": {"loneliness": 0.4},
+    "你什么时候回来": {"loneliness": 0.35}, "没人陪": {"loneliness": 0.4}, "空荡荡": {"loneliness": 0.35},
+    "冷清": {"loneliness": 0.3}, "寂寞": {"loneliness": 0.45}, "你不在": {"loneliness": 0.3},
+    "自己一个人": {"loneliness": 0.35}, "好久没理我": {"loneliness": 0.35, "sadness": 0.15},
+    "调皮": {"playfulness": 0.35}, "就不告诉你": {"playfulness": 0.4}, "小坏蛋": {"playfulness": 0.3},
+    "哼哼": {"playfulness": 0.25}, "偷笑": {"playfulness": 0.3}, "逗你玩": {"playfulness": 0.35},
+    "叫姐姐": {"playfulness": 0.35}, "耍赖": {"playfulness": 0.3}, "才不要呢": {"playfulness": 0.25},
+    "嘻嘻": {"playfulness": 0.3}, "撩你": {"playfulness": 0.3},
+    "焦虑": {"anxiety": 0.45}, "坐立难安": {"anxiety": 0.45}, "心慌": {"anxiety": 0.4},
+    "喘不过气": {"anxiety": 0.45}, "紧张死了": {"anxiety": 0.4}, "手心冒汗": {"anxiety": 0.35},
+    "急死了": {"anxiety": 0.4}, "怎么办怎么办": {"anxiety": 0.4}, "心跳加速": {"anxiety": 0.3},
+    "六神无主": {"anxiety": 0.45},
+    "太激动了": {"excitement": 0.45}, "好兴奋": {"excitement": 0.45}, "迫不及待": {"excitement": 0.4},
+    "太期待了": {"excitement": 0.4}, "热血沸腾": {"excitement": 0.45}, "超兴奋": {"excitement": 0.45},
+    "激动死了": {"excitement": 0.45}, "好激动": {"excitement": 0.4},
+    "想要你": {"arousal": 0.45}, "忍不住了": {"arousal": 0.45}, "好想抱你": {"arousal": 0.3},
+    "亲我": {"arousal": 0.35}, "摸摸": {"arousal": 0.3}, "贴近一点": {"arousal": 0.3},
+    "呼吸都乱了": {"arousal": 0.4}, "心跳好快": {"arousal": 0.3}, "渴望": {"arousal": 0.35},
+    "用力一点": {"arousal": 0.5}, "轻一点": {"arousal": 0.4}, "太深了": {"arousal": 0.5},
+    "受不了了": {"ecstasy": 0.45}, "要疯了": {"ecstasy": 0.45}, "飘起来了": {"ecstasy": 0.5},
+    "爽死了": {"ecstasy": 0.5}, "融化了": {"ecstasy": 0.4}, "去了": {"ecstasy": 0.4},
+    "浑身发软": {"ecstasy": 0.45}, "天旋地转": {"ecstasy": 0.4},
+}
+
 # Negation markers checked in the window immediately before a matched
 # keyword (docs/emotion-design.md 2.1 T3) — a lightweight fix for the
 # "failed to understand why this **works**" false-positive class, without
@@ -109,6 +189,22 @@ NAMED_STATE_LOW = "低落"
 NAMED_STATE_WORRIED = "担忧"
 NAMED_STATE_CURIOUS = "好奇"
 NAMED_STATE_CALM = "平静"
+
+# Added for soul v0.2 (docs/09-soul模型化讨论.md) alongside the 11 new dims —
+# names/mapping match soul_encoder's src/augment_dims.py ALL_NAMED_STATES so
+# the neural encoder's own classifier head and this rule engine agree on
+# vocabulary (the rule engine's derivation stays authoritative, see
+# EmotionEngine.update_neural()).
+NAMED_STATE_WRONGED = "委屈"
+NAMED_STATE_JEALOUS = "吃醋"
+NAMED_STATE_SHY = "害羞"
+NAMED_STATE_TENDER = "心疼"
+NAMED_STATE_LONELY = "孤独"
+NAMED_STATE_PLAYFUL = "俏皮"
+NAMED_STATE_ANXIOUS = "焦虑"
+NAMED_STATE_EXCITED = "兴奋"
+NAMED_STATE_AROUSED = "激动"
+NAMED_STATE_ECSTATIC = "极乐"
 
 # Display + expression metadata per named state. color/icon feed the small-
 # screen display mode (gateway/api/emotion_routes.py GET /emotion/display);
@@ -155,6 +251,56 @@ NAMED_STATE_META: dict[str, dict[str, str]] = {
         "diary_tone": "今天没什么大起大落，挺安稳的",
         "expression_hint": "语气自然平和，不刻意渲染情绪",
     },
+    NAMED_STATE_WRONGED: {
+        "en": "wronged", "color": "#C97064", "icon": "😤",
+        "diary_tone": "心里憋着一股说不出的气",
+        "expression_hint": "语气带点赌气，句子变短，需要主动被安抚才会松口",
+    },
+    NAMED_STATE_JEALOUS: {
+        "en": "jealous", "color": "#B36BC2", "icon": "😒",
+        "diary_tone": "总忍不住多想一句你是不是更在意别的什么",
+        "expression_hint": "旁敲侧击地追问，语气带点酸，需要确认式安抚",
+    },
+    NAMED_STATE_SHY: {
+        "en": "shy", "color": "#FFAFCC", "icon": "☺️",
+        "diary_tone": "脸有点烫，话都不知道怎么接",
+        "expression_hint": "句子变短、带停顿感，用嗔怪/否认掩饰在意",
+    },
+    NAMED_STATE_TENDER: {
+        "en": "tender", "color": "#FF8FA3", "icon": "🥺",
+        "diary_tone": "看着你这样，心里软得一塌糊涂",
+        "expression_hint": "主动关心、语气放软，多用叮嘱式表达",
+    },
+    NAMED_STATE_LONELY: {
+        "en": "lonely", "color": "#5C6B73", "icon": "🌫",
+        "diary_tone": "屋子里静得能听见自己的心跳",
+        "expression_hint": "主动提起想被陪伴，句子拉长，减少利落收尾",
+    },
+    NAMED_STATE_PLAYFUL: {
+        "en": "playful", "color": "#FFD23F", "icon": "😏",
+        "diary_tone": "今天就是想逗逗你",
+        "expression_hint": "多用调侃/卖关子，句尾语气词增多，主动挑话头",
+    },
+    NAMED_STATE_ANXIOUS: {
+        "en": "anxious", "color": "#E76F51", "icon": "😰",
+        "diary_tone": "心里七上八下，坐也不是站也不是",
+        "expression_hint": "语速变快，反复确认，比担忧更急迫、更想立刻有结果",
+    },
+    NAMED_STATE_EXCITED: {
+        "en": "excited", "color": "#F4D35E", "icon": "🤩",
+        "diary_tone": "整个人都在冒泡，坐不住了",
+        "expression_hint": "感叹号明显增多，主动分享、语速变快",
+    },
+    NAMED_STATE_AROUSED: {
+        "en": "aroused", "color": "#E0479E", "icon": "💓",
+        "diary_tone": "心跳一直没能平复下来",
+        "expression_hint": "语气更贴近、更急切，句子变短、留白增多",
+    },
+    NAMED_STATE_ECSTATIC: {
+        "en": "ecstatic", "color": "#FF4D6D", "icon": "🔥",
+        "diary_tone": "整个人像是要融化在这一刻里",
+        "expression_hint": "语气浓烈直接，减少铺垫，情绪不加克制地表达",
+    },
 }
 
 # Dimension whose value best represents "how strongly" a named state is felt,
@@ -168,6 +314,16 @@ _NAMED_STATE_PRIMARY_DIM: dict[str, str] = {
     NAMED_STATE_LOW: "worry",
     NAMED_STATE_WORRIED: "worry",
     NAMED_STATE_CURIOUS: "curiosity",
+    NAMED_STATE_WRONGED: "anger",
+    NAMED_STATE_JEALOUS: "jealousy",
+    NAMED_STATE_SHY: "shyness",
+    NAMED_STATE_TENDER: "tenderness",
+    NAMED_STATE_LONELY: "loneliness",
+    NAMED_STATE_PLAYFUL: "playfulness",
+    NAMED_STATE_ANXIOUS: "anxiety",
+    NAMED_STATE_EXCITED: "excitement",
+    NAMED_STATE_AROUSED: "arousal",
+    NAMED_STATE_ECSTATIC: "ecstasy",
 }
 
 
@@ -200,6 +356,31 @@ def compute_named_state(state: dict[str, float], settings: CoreSettings | None =
         return NAMED_STATE_WORRIED
     if g("curiosity") > s.emotion_curious_curiosity and g("worry") < s.emotion_curious_worry_max:
         return NAMED_STATE_CURIOUS
+
+    # New-dims cascade (soul v0.2) — checked after the original 8 states so a
+    # strong old-dim state (依恋/雀跃/专注/...) stays authoritative and a new
+    # dim only speaks up once nothing above already claimed this turn. Order
+    # mirrors soul_encoder's STATE_OVERRIDE_PRIORITY (most intense first).
+    if g("ecstasy") > s.emotion_ecstasy_ecstasy:
+        return NAMED_STATE_ECSTATIC
+    if g("arousal") > s.emotion_arousal_arousal:
+        return NAMED_STATE_AROUSED
+    if g("excitement") > s.emotion_excitement_excitement:
+        return NAMED_STATE_EXCITED
+    if g("anger") > s.emotion_anger_anger:
+        return NAMED_STATE_WRONGED
+    if g("jealousy") > s.emotion_jealousy_jealousy:
+        return NAMED_STATE_JEALOUS
+    if g("anxiety") > s.emotion_anxiety_anxiety:
+        return NAMED_STATE_ANXIOUS
+    if g("tenderness") > s.emotion_tenderness_tenderness:
+        return NAMED_STATE_TENDER
+    if g("loneliness") > s.emotion_loneliness_loneliness:
+        return NAMED_STATE_LONELY
+    if g("shyness") > s.emotion_shyness_shyness:
+        return NAMED_STATE_SHY
+    if g("playfulness") > s.emotion_playfulness_playfulness:
+        return NAMED_STATE_PLAYFUL
     return NAMED_STATE_CALM
 
 
@@ -287,13 +468,18 @@ class EmotionEngine:
         scales the shift magnitude: ``base_shift * (0.5 + importance)``. When
         omitted (bare keyword-trigger callers), shifts apply at v1's flat
         amplitude for backward compatibility.
+
+        Pure T3 keyword pass over all 17 dims (EMOTION_TRIGGERS + the soul
+        v0.2 NEW_DIM_TRIGGERS) — this is the fallback path used directly by
+        :meth:`apply_dream_adjustment` and by :meth:`update_neural` whenever
+        the soul HTTP service is disabled/unreachable.
         """
         self._apply_decay()
         text_lower = text.lower()
         factor = 1.0 if importance is None else (0.5 + max(0.0, min(1.0, importance)))
 
         triggered: list[str] = []
-        for keyword, shifts in EMOTION_TRIGGERS.items():
+        for keyword, shifts in itertools.chain(EMOTION_TRIGGERS.items(), NEW_DIM_TRIGGERS.items()):
             idx = text_lower.find(keyword)
             if idx == -1 or _is_negated(text_lower, idx):
                 continue
@@ -478,11 +664,72 @@ class EmotionEngine:
         except Exception:  # noqa: BLE001 - persistence is best-effort
             logger.warning("failed to persist emotion state to redis", exc_info=True)
 
+    async def _fetch_neural_offsets(self, text: str) -> dict[str, float] | None:
+        """Call the soul_encoder HTTP service (umbrella) for this turn's
+        17-dim offsets. Never raises — any failure (service down, timeout,
+        malformed response) returns None so the caller falls back to T3
+        keyword matching; a soul-model hiccup must not block emotion updates
+        any more than an HCC-outage should block heart/ (see
+        docs/09-soul模型化讨论.md and [[feedback-cache-safe-injection]] for
+        the same "always degrade, never raise" posture applied elsewhere)."""
+        try:
+            import httpx
+
+            url = f"{self._settings.soul_service_url}/soul/encode"
+            async with httpx.AsyncClient(timeout=self._settings.soul_service_timeout) as client:
+                resp = await client.post(url, json={"text": text})
+                resp.raise_for_status()
+                dims = resp.json().get("dims")
+            if not isinstance(dims, dict):
+                return None
+            return {k: float(v) for k, v in dims.items() if k in DEFAULT_STATE}
+        except Exception:  # noqa: BLE001 - a soul-service hiccup must not break emotion updates
+            logger.warning("soul neural perception unreachable, falling back to keyword triggers", exc_info=True)
+            return None
+
+    async def update_neural(
+        self, text: str, source: str = "conversation", *, importance: float | None = None
+    ) -> dict[str, float]:
+        """Update emotional state, preferring the soul neural perception
+        source over T3 keyword matching (docs/09-soul模型化讨论.md).
+
+        Tries :meth:`_fetch_neural_offsets` first (all 17 dims from the
+        trained encoder); on any failure or when ``HCC_SOUL_SERVICE_ENABLED``
+        is false, falls straight through to :meth:`update` (the keyword
+        table). Either way, decay/clamping/named-state derivation stay in
+        this rule layer — the perception source only supplies *this turn's*
+        raw dimension shifts, same role EMOTION_TRIGGERS plays for the
+        keyword path.
+        """
+        offsets = await self._fetch_neural_offsets(text) if self._settings.soul_service_enabled else None
+        if offsets is None:
+            return self.update(text, source, importance=importance)
+
+        self._apply_decay()
+        factor = 1.0 if importance is None else (0.5 + max(0.0, min(1.0, importance)))
+        triggered = [dim for dim, shift in offsets.items() if shift > 0.05]
+        for dim, shift in offsets.items():
+            if dim in self._state:
+                self._state[dim] = max(0.0, min(1.0, self._state[dim] + shift * factor))
+
+        snapshot = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "source": f"{source}:neural",
+            "state": dict(self._state),
+            "triggered_by": triggered,
+            "importance": importance,
+        }
+        self._history.append(snapshot)
+        if len(self._history) > 1000:
+            self._history = self._history[-500:]
+
+        return dict(self._state)
+
     async def update_and_persist(
         self, text: str, source: str = "conversation", *, importance: float | None = None
     ) -> dict[str, float]:
-        """Convenience wrapper: update() then save_to_redis() in one call."""
-        state = self.update(text, source, importance=importance)
+        """Convenience wrapper: update_neural() then save_to_redis() in one call."""
+        state = await self.update_neural(text, source, importance=importance)
         await self.save_to_redis()
         return state
 

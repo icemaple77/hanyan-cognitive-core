@@ -209,6 +209,42 @@ class CoreSettings(BaseSettings):
     emotion_curious_curiosity: float = Field(default=0.7, ge=0.0, le=1.0)
     emotion_curious_worry_max: float = Field(default=0.3, ge=0.0, le=1.0)
 
+    # New-dims named-state thresholds (soul v0.2, 11 added dims) — checked
+    # after the original 8-state cascade above (so an already-strong old
+    # state like 依恋/雀跃 isn't clobbered by a milder new-dim signal),
+    # in override-priority order (docs/09-soul模型化讨论.md), most
+    # intense/least-ambiguous first. Single-threshold (not paired like the
+    # old states) — same "not yet calibrated against real data" caveat.
+    emotion_ecstasy_ecstasy: float = Field(default=0.5, ge=0.0, le=1.0)
+    emotion_arousal_arousal: float = Field(default=0.5, ge=0.0, le=1.0)
+    emotion_excitement_excitement: float = Field(default=0.45, ge=0.0, le=1.0)
+    emotion_anger_anger: float = Field(default=0.35, ge=0.0, le=1.0)
+    emotion_jealousy_jealousy: float = Field(default=0.35, ge=0.0, le=1.0)
+    emotion_anxiety_anxiety: float = Field(default=0.4, ge=0.0, le=1.0)
+    emotion_tenderness_tenderness: float = Field(default=0.35, ge=0.0, le=1.0)
+    emotion_loneliness_loneliness: float = Field(default=0.35, ge=0.0, le=1.0)
+    emotion_shyness_shyness: float = Field(default=0.35, ge=0.0, le=1.0)
+    emotion_playfulness_playfulness: float = Field(default=0.3, ge=0.0, le=1.0)
+
+    # Soul neural perception source (docs/09-soul模型化讨论.md) — text -> 17-dim
+    # offsets from the trained soul_encoder, served over HTTP from umbrella
+    # (tailscale). EmotionEngine.update_neural() tries this first and falls
+    # back to the T3 keyword table (EMOTION_TRIGGERS/NEW_DIM_TRIGGERS) on any
+    # failure — never a hard dependency, see core/emotion.py.
+    soul_service_enabled: bool = Field(
+        default=True,
+        description="Master switch for the neural perception source (HCC_SOUL_SERVICE_ENABLED).",
+    )
+    soul_service_url: str = Field(
+        default="http://100.98.144.4:8731",
+        description="Base URL of the soul_encoder inference service on umbrella (HCC_SOUL_SERVICE_URL).",
+    )
+    soul_service_timeout: float = Field(
+        default=2.0,
+        description="Timeout in seconds for the soul service call (HCC_SOUL_SERVICE_TIMEOUT). "
+        "On timeout/error, falls back to keyword triggers rather than blocking the caller.",
+    )
+
     # Retrieval mood-congruent weighting (2.3) — kept deliberately small so
     # emotion nudges ranking without overriding semantic relevance.
     emotion_retrieval_closeness_weight: float = Field(default=0.15, ge=0.0, le=1.0)
