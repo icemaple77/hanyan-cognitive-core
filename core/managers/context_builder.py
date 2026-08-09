@@ -26,6 +26,7 @@ so :meth:`build` accepts an injected ``emotion_provider`` callable and returns
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Awaitable, Callable
 
 from core.managers.knowledge_manager import KnowledgeManager
@@ -35,6 +36,76 @@ from core.providers.base import SearchQuery
 logger = logging.getLogger(__name__)
 
 __all__ = ["ContextBuilder"]
+
+# Memory types whose rows are raw tool-call logs, never fit for per-turn context
+# injection. OpenClaw's tool_result_persist hook stores these at importance 0.3,
+# but a non-trivial share were written/promoted to >=0.5 and so slip past the
+# gateway's importance-based noise filter — this render-side type gate is the
+# backstop that keeps them out of the injected "## Relevant Memories" block
+# regardless of importance.
+_NOISE_TYPES = {"tool_result"}
+
+# Line prefixes that mark a content line as tool-log / retrieval-plumbing rather
+# than a real memory headline. When a memory has no summary we fall back to its
+# first usable content line (see _headline); these metadata lines are skipped so
+# the injected context never shows raw tool output or RAG candidate scaffolding
+# (confidence/evidence/recalls/status pointers) as a memory's title.
+_JUNK_LINE_PREFIXES = (
+    "[openclaw tool_result:",
+    "confidence:",
+    "evidence:",
+    "recalls:",
+    "status:",
+    "source ",
+    "source:",
+)
+
+
+def _clean_line(line: str) -> str:
+    """Un-escape JSON artifacts and collapse whitespace in a single line."""
+    line = line.replace("\\n", " ").replace('\\"', '"').replace("\\\\", "\\")
+    return re.sub(r"\s+", " ", line).strip()
+
+
+def _headline(item: dict[str, Any]) -> str | None:
+    """Derive a clean one-line headline for a memory, or ``None`` to drop it.
+
+    Prefers a non-empty ``summary``; otherwise scans ``content`` for the first
+    line that is neither empty, a bare JSON bracket, nor a known junk prefix.
+    Returns ``None`` when nothing usable remains so the caller can skip the
+    memory entirely rather than inject a garbage bullet.
+    """
+    if str(item.get("type") or "").lower() in _NOISE_TYPES:
+        return None
+
+    summary = (item.get("summary") or "").strip()
+    if summary:
+        cleaned = _clean_line(summary)
+        if cleaned:
+            return cleaned[:200]
+
+    content = item.get("content") or ""
+    for raw in content.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped in {"{", "}", "[", "]", "```"}:
+            continue
+        # Strip leading bullet/dash markers (possibly repeated, e.g. "- - ")
+        # so prefix matching ignores RAG-nested bulleting.
+        body = stripped.lstrip("-*• ")
+        lowered = body.lower()
+        # RAG "candidate digest" rows wrap the real text in a "Candidate:" line
+        # followed by confidence/evidence/... metadata. The text after the colon
+        # is the actual memory — unwrap it rather than skipping the whole line.
+        if lowered.startswith("candidate:"):
+            body = body.split(":", 1)[1]
+            lowered = body.strip().lower()
+        if not body.strip() or lowered.startswith(_JUNK_LINE_PREFIXES):
+            continue
+        cleaned = _clean_line(body)
+        if cleaned:
+            return cleaned[:200]
+
+    return None
 
 # An emotion provider is any (async) callable: user_id -> state dict | None.
 EmotionProvider = Callable[[str], Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
@@ -100,7 +171,12 @@ class ContextBuilder:
             The structured context payload (see module docstring).
         """
         # 1. Durable memory context (importance-ranked recent + keyword search).
-        memory_query = SearchQuery(query=query, user_id=user_id, limit=limit)
+        #    Over-fetch: junk/tool_result rows are filtered out at render time
+        #    (see _headline), so ask for a wider pool than `limit` or those
+        #    dropped rows would starve the injected block below its cap.
+        memory_query = SearchQuery(
+            query=query, user_id=user_id, limit=max(limit * 3, limit)
+        )
         memory_result = await self._memory.search(memory_query)
 
         # 2. Knowledge base context.
@@ -139,6 +215,7 @@ class ContextBuilder:
             memory_items=memory_result.items,
             knowledge_items=knowledge_result.items,
             emotion_state=emotion_state,
+            memory_limit=limit,
         )
 
         return {
@@ -168,17 +245,30 @@ class ContextBuilder:
         memory_items: list[dict[str, Any]],
         knowledge_items: list[dict[str, Any]],
         emotion_state: dict[str, Any] | None,
+        memory_limit: int = 10,
     ) -> str:
         """Render the retrieved items into a readable context block."""
         blocks: list[str] = []
 
-        if memory_items:
+        headlines: list[str] = []
+        seen: set[str] = set()
+        for item in memory_items:
+            headline = _headline(item)
+            if headline is None:
+                continue
+            # Drop near-identical bullets (case/space-insensitive) — the same
+            # digest is often stored several times with trivial variation.
+            key = headline.casefold().strip()
+            if key in seen:
+                continue
+            seen.add(key)
+            headlines.append(headline)
+            if len(headlines) >= memory_limit:
+                break
+
+        if headlines:
             lines = ["## Relevant Memories"]
-            for item in memory_items:
-                summary = (item.get("summary") or "").strip()
-                content = (item.get("content") or "").strip()
-                headline = summary or content.splitlines()[0] if content else ""
-                lines.append(f"- {headline}".rstrip())
+            lines.extend(f"- {h}" for h in headlines)
             blocks.append("\n".join(lines))
 
         if knowledge_items:
