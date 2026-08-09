@@ -62,9 +62,27 @@ _JUNK_LINE_PREFIXES = (
 
 
 def _clean_line(line: str) -> str:
-    """Un-escape JSON artifacts and collapse whitespace in a single line."""
+    """Un-escape JSON artifacts, strip leaked structured-data noise, and
+    collapse whitespace in a single line.
+
+    Dream-extraction / compaction digests leak fragments like
+    ``[emotion] {"type":"message","id":...} → session: <uuid>.jsonl`` into
+    content (the JSON is frequently truncated with no closing brace). Cut the
+    headline at the first such marker — everything after it is machine noise,
+    never a memory title.
+    """
     line = line.replace("\\n", " ").replace('\\"', '"').replace("\\\\", "\\")
-    return re.sub(r"\s+", " ", line).strip()
+    # Cut at the first inline JSON object (optionally preceded by a "[tag] ")
+    # or a "→ session: …" pointer.
+    line = re.split(r'\s*(?:\[[a-z_]+\]\s*)?\{"', line, maxsplit=1)[0]
+    line = re.split(r"→\s*session:", line, maxsplit=1)[0]
+    line = re.sub(r"\s+", " ", line).strip()
+    # Drop dangling separators left behind after cutting the noise tail.
+    line = line.rstrip(" -–—:;·|,")
+    # If nothing but separators/punctuation survived, it isn't a headline.
+    if not re.search(r"\w", line):
+        return ""
+    return line
 
 
 def _headline(item: dict[str, Any]) -> str | None:
