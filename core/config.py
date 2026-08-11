@@ -94,6 +94,20 @@ class CoreSettings(BaseSettings):
         description="Upper bound clamped onto the requested context limit "
         "(HCC_CONTEXT_MAX_LIMIT).",
     )
+    identity_aliases: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Retrieval identity groups: primary user_id -> related user_ids that "
+            "are all searched together when building /context (2026-08-09 排查 "
+            "P1-3). 公子's memories are fragmented across scopes (michael + the "
+            "Feishu/Hermes open_id ou_...), and strict per-scope search means "
+            "cross-scope memories are never recalled. Listing them here lets one "
+            "identity's memories surface for another WITHOUT merging/rewriting "
+            "any rows (isolation for genuinely separate users is preserved). Set "
+            "via HCC_IDENTITY_ALIASES as JSON, e.g. "
+            '{"michael": ["michael", "ou_90cabb31bb5f47834ed31e603e44cd0c"]}.'
+        ),
+    )
 
     # --- QMD knowledge document generator -------------------------------
     qmd_dir: Path = Field(
@@ -103,6 +117,20 @@ class CoreSettings(BaseSettings):
     qmd_git_enabled: bool = Field(
         default=False,
         description="If true, auto git add+commit the QMD dir after generation.",
+    )
+    qmd_min_importance: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "QMD knowledge-doc export threshold. A memory is distilled into a "
+            "knowledge document when it is shared=true OR importance >= this "
+            "value. Historically the generator required shared=true, but every "
+            "OpenClaw/Hermes-synced memory is stored shared=false, so the KB "
+            "produced 0 docs (2026-08-09 排查 P0-1). Gating on importance instead "
+            "keeps raw low-value chatter out while still distilling the "
+            "high-signal minority (~356 rows at 0.6)."
+        ),
     )
 
     # --- Bidirectional sync engine --------------------------------------
@@ -236,7 +264,7 @@ class CoreSettings(BaseSettings):
         description="Master switch for the neural perception source (HCC_SOUL_SERVICE_ENABLED).",
     )
     soul_service_url: str = Field(
-        default="http://100.98.144.4:8731",
+        default="http://127.0.0.1:8732",
         description="Base URL of the soul_encoder inference service on umbrella (HCC_SOUL_SERVICE_URL).",
     )
     soul_service_timeout: float = Field(

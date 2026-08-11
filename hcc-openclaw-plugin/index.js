@@ -1,8 +1,15 @@
-const DEFAULT_BASE_URL = "http://localhost:8000";
-const DEFAULT_USER_ID = "default";
+const DEFAULT_BASE_URL = "http://100.66.103.69:8000";
+const SOUL_BASE_URL = "http://100.66.103.69:8732"; // soul 实时情绪(方案A): Mac MLX 17维
+const DEFAULT_USER_ID = "michael";
 const DEFAULT_AGENT_ID = "openclaw";
 const DEFAULT_SESSION_RECALL_LIMIT = 5;
 const DEFAULT_SESSION_RECALL_FETCH = 20; // pool fetched before ranking by importance, see buildSessionContext
+const DEFAULT_FETCH_TIMEOUT_MS = 8000; // abort a hung HCC request before it stalls prompt building
+const CACHE_MAX_SESSIONS = 100; // FIFO cap for both pendingSessionContext and turnContextCache
+
+// Effective timeout, overridable via config/env (see resolveConfig). hccFetch
+// falls back to this when a call doesn't pass timeoutMs explicitly.
+let activeFetchTimeoutMs = DEFAULT_FETCH_TIMEOUT_MS;
 
 function resolveConfig(api) {
   const cfg = api.pluginConfig || {};
@@ -14,20 +21,35 @@ function resolveConfig(api) {
     sessionRecallEnabled: cfg.sessionRecallEnabled ?? !truthyEnv(process.env.HCC_SESSION_RECALL_DISABLED) ?? true,
     sessionRecallLimit: cfg.sessionRecallLimit || Number(process.env.HCC_SESSION_RECALL_LIMIT) || DEFAULT_SESSION_RECALL_LIMIT,
     emotionEnabled: cfg.emotionEnabled ?? !truthyEnv(process.env.HCC_EMOTION_DISABLED) ?? true,
+    fetchTimeoutMs: cfg.fetchTimeoutMs || Number(process.env.HCC_FETCH_TIMEOUT_MS) || DEFAULT_FETCH_TIMEOUT_MS,
   };
 }
 
-async function hccFetch(baseUrl, path, { method = "GET", body } = {}) {
-  const res = await fetch(`${baseUrl}/api/v1${path}`, {
+async function hccFetch(baseUrl, path, { method = "GET", body, timeoutMs, raw = false } = {}) {
+  // raw=true: 不加 /api/v1 前缀(给 soul 等非 HCC-gateway 服务用)
+  const url = raw ? `${baseUrl}${path}` : `${baseUrl}/api/v1${path}`;
+  const res = await fetch(url, {
     method,
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(timeoutMs || activeFetchTimeoutMs),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`HCC ${method} ${path} -> ${res.status} ${text}`);
   }
   return res.json();
+}
+
+// FIFO eviction helper for the two session-keyed caches below — a gateway
+// process can accumulate hundreds of session ids over weeks of uptime; an
+// unbounded Map would leak. Cap at CACHE_MAX_SESSIONS, evict oldest first.
+function cacheSet(cache, sid, value) {
+  cache.set(sid, value);
+  if (cache.size > CACHE_MAX_SESSIONS) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
 }
 
 function jsonResult(value) {
@@ -69,6 +91,89 @@ const pendingSessionContext = new Map(); // sessionId -> { text, memoryIds }
 
 function sessionIdOf(event, ctx) {
   return event?.sessionId || ctx?.sessionId || ctx?.agentId || null;
+}
+
+// --- before_prompt_build turn-tail HCC context injection (方案A OpenClaw 版) ---
+//
+// 与上面 session_start → before_prompt_build 的一次性 prependSystemContext 注入
+// (体检报告 P0-2)是两回事、互不干扰:那个只在会话第一轮跑一次,写进 system
+// prompt 前缀;这里是"每轮"都可能刷新的记忆块,写进 appendContext——OpenClaw
+// 把 appendContext 拼进当轮 user 消息尾部(见 dist/prepare.runtime-*.js:
+// `preparedPrompt = preparedPrompt + "\n\n" + hookResult.appendContext`),不
+// 进 system prompt,所以不会破坏 DeepSeek 的 system-prompt 前缀缓存。OpenClaw
+// 对同一 hook 名的多个监听器按注册顺序依次跑并合并结果(mergeBeforePromptBuild,
+// 见 dist/hook-runner-global-*.js),appendContext/prependSystemContext 分别
+// 拼接,互不覆盖——所以这里独立注册第二个 before_prompt_build 监听器,不用改
+// 上面那个。
+//
+// 节流参考 Hermes 插件 ~/.hermes/plugins/hcc/__init__.py 的
+// _PREFETCH_MIN_INTERVAL_TURNS=3:3 轮内命中缓存不重新拉取(省一次 HCC 往返,
+// 不是为了保前缀缓存——appendContext 本来就拼在"当轮"这个从不被缓存的新内容
+// 里,拉不拉新都不影响历史轮次的前缀)。
+const APPEND_CONTEXT_MAX_CHARS = 1500;
+const APPEND_CONTEXT_THROTTLE_TURNS = 3;
+const turnContextCache = new Map(); // sessionId -> { text, turnsSinceRefresh }
+
+function lastUserMessageText(messages) {
+  if (!Array.isArray(messages)) return "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "user") return extractMessageText(messages[i]);
+  }
+  return "";
+}
+
+async function fetchTurnContextBlock(baseUrl, { userId, agentId }, query, log) {
+  try {
+    const data = await hccFetch(baseUrl, "/context", {
+      method: "POST",
+      body: { query, user_id: userId, agent_id: agentId, include_emotion: true },
+    });
+    let text = String(data?.context || "").trim();
+    // 方案A: soul 实时情绪直读——对"当前这句用户消息"调 soul 编码器拿 17 维
+    // 情绪, 拼进 appendContext 尾部。失败静默(不影响记忆块), 不阻塞对话。
+    if (query) {
+      try {
+        const soul = await hccFetch(SOUL_BASE_URL, "/soul/encode", {
+          method: "POST",
+          body: { text: query },
+          timeoutMs: 3000,
+          raw: true, // soul 无 /api/v1 前缀
+        });
+        const dims = soul?.dims || {};
+        const named = soul?.named_state || null;
+        const top = Object.entries(dims)
+          .filter(([, v]) => Math.abs(v) > 0.05)
+          .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+          .slice(0, 4);
+        const parts = [];
+        let nsName = null, nsProb = null;
+        if (named && Array.isArray(named) && named.length) {
+          nsName = named[0].state || named[0].name || null;
+          nsProb = named[0].prob;
+        } else if (named && typeof named === "object") {
+          nsName = named.state || named.name || (typeof named === "string" ? named : null);
+          nsProb = named.prob;
+        } else if (typeof named === "string") {
+          nsName = named;
+        }
+        if (nsName) {
+          parts.push('命名态:' + nsName + (nsProb != null ? '(概率' + Number(nsProb).toFixed(2) + ')' : ''));
+        }
+        if (top.length) {
+          parts.push(top.map(([k, v]) => k + '=' + (v > 0 ? "+" : "") + v.toFixed(2)).join(" "));
+        }
+        if (parts.length) {
+          text += (text ? "\n" : "") + "[soul 实时情绪] " + parts.join(" | ");
+        }
+      } catch (err) {
+        log.error?.(`[hcc-memory] soul encode failed: ${err.message}`);
+      }
+    }
+    return text.length > APPEND_CONTEXT_MAX_CHARS ? text.slice(0, APPEND_CONTEXT_MAX_CHARS) : text;
+  } catch (err) {
+    log.error?.(`[hcc-memory] before_prompt_build turn context fetch failed: ${err.message}`);
+    return undefined; // undefined = 请求失败,区分于请求成功但检索为空的 ""
+  }
 }
 
 function renderSessionContext(memories, emotion) {
@@ -114,7 +219,11 @@ async function buildSessionContext(baseUrl, { userId, agentId, sessionRecallEnab
 
   if (emotionEnabled) {
     try {
-      emotion = await hccFetch(baseUrl, "/emotion/state", { method: "GET" });
+      emotion = await hccFetch(
+        baseUrl,
+        `/emotion/state?user_id=${encodeURIComponent(userId)}&agent_id=${encodeURIComponent(agentId)}`,
+        { method: "GET" }
+      );
     } catch (err) {
       log.error?.(`[hcc-memory] session_start emotion fetch failed: ${err.message}`);
     }
@@ -143,10 +252,13 @@ const MemoryGetSchema = {
   additionalProperties: false,
 };
 
-// `kind: "memory"` is deliberately omitted for now — it puts the whole
-// plugin behind OpenClaw's exclusive `plugins.slots.memory` gate (only the
-// slot owner loads at all), which would disable memory-core. Add it back
-// here (and in openclaw.plugin.json) only when actually handing off the slot.
+// `kind: "memory"` is declared here AND in openclaw.plugin.json, and the
+// production config assigns the memory slot to this plugin
+// (`plugins.slots.memory: "hcc-memory"`, memory-core disabled). The slot is
+// deliberately owned: hcc-memory is the memory backend for OpenClaw on n100.
+// If you ever want to coexist with memory-core instead, remove `kind` from
+// both files and drop the slot assignment, then registerMemoryCapability
+// below will no-op (it's already guarded).
 export default {
   id: "hcc-memory",
   name: "HCC Memory",
@@ -154,7 +266,8 @@ export default {
   description: "Bridges OpenClaw memory to HCC (Hanyan Cognitive Core) REST API",
 
   register(api) {
-    const { baseUrl, userId, agentId, sessionRecallEnabled, sessionRecallLimit, emotionEnabled } = resolveConfig(api);
+    const { baseUrl, userId, agentId, sessionRecallEnabled, sessionRecallLimit, emotionEnabled, fetchTimeoutMs } = resolveConfig(api);
+    activeFetchTimeoutMs = fetchTimeoutMs;
     const log = api.logger || console;
 
     api.registerTool({
@@ -196,9 +309,30 @@ export default {
       async execute(_toolCallId, params) {
         try {
           if (params.id) {
-            const data = await hccFetch(baseUrl, "/memory/recent?limit=200", { method: "GET" });
-            const found = (data.items || []).find((m) => m.id === params.id);
-            return jsonResult({ found: Boolean(found), memory: found || null });
+            // HCC has no GET /memory/{id} and /memory/search's limit caps at
+            // 100 (MemorySearch.le=100), so walk pages of the scoped,
+            // blank-query search (user/agent filter + created_at desc — ILIKE
+            // is skipped when query is blank) up to a 1000-item window. Don't
+            // use /memory/recent: it's unscoped global recency and may not
+            // contain this agent's memories at all.
+            let found = null;
+            for (let offset = 0; offset < 1000 && !found; offset += 100) {
+              const data = await hccFetch(baseUrl, "/memory/search", {
+                method: "POST",
+                body: { query: "", user_id: userId, agent_id: agentId, limit: 100, offset },
+              });
+              const items = data.items || [];
+              found = items.find((m) => m.id === params.id) || null;
+              if (items.length < 100) break; // no more pages
+            }
+            if (found) return jsonResult({ found: true, memory: found });
+            // id not in the scoped window: try content search as a last resort
+            const searchData = await hccFetch(baseUrl, "/memory/search", {
+              method: "POST",
+              body: { query: params.id, user_id: userId, agent_id: agentId, limit: 1 },
+            });
+            const byId = searchData.items?.[0];
+            return jsonResult({ found: Boolean(byId && byId.id === params.id), memory: byId && byId.id === params.id ? byId : null });
           }
           if (params.content) {
             const data = await hccFetch(baseUrl, "/memory/search", {
@@ -222,16 +356,19 @@ export default {
     api.on("session_start", async (event, ctx) => {
       const sid = sessionIdOf(event, ctx);
       if (!sid) return;
-      // Only warm-start on session boundaries that actually begin a fresh
-      // context — a compaction/idle/shutdown/restart tick isn't "starting to
-      // talk to someone new", so re-injecting recall there would just be noise
-      // (or, for compaction, actively wrong — the whole point of compaction is
-      // the model already has the context, condensed).
-      if (!["new", "reset", "daily"].includes(event?.reason)) return;
+      // NOTE (2026-08-06): OpenClaw's session_start payload has NO `reason`
+      // field — only sessionId/sessionKey/resumedFrom (verified in
+      // dist/active-sessions-shutdown-tracker-*.js). The old gate
+      // `if (!["new","reset","daily"].includes(event?.reason)) return;`
+      // therefore never matched and silently disabled session recall.
+      // OpenClaw only fires session_start when isNewSession is true, which is
+      // already the correct "fresh context" boundary; resumedFrom is kept as a
+      // defensive no-op guard for the same-session edge case.
+      if (event?.resumedFrom && event?.resumedFrom === event?.sessionId) return;
       try {
         const built = await buildSessionContext(baseUrl, { userId, agentId, sessionRecallEnabled, sessionRecallLimit, emotionEnabled }, log);
         if (built.text) {
-          pendingSessionContext.set(sid, built);
+          cacheSet(pendingSessionContext, sid, built);
           log.info?.(
             `[hcc-memory] session_start recall: session=${sid} reason=${event.reason} ` +
               `memories=${built.memoryIds.length} emotion=${emotionEnabled}`
@@ -259,7 +396,44 @@ export default {
       return { prependSystemContext: pending.text };
     });
 
+    // 任务2:每轮 HCC 记忆注入 appendContext(尾部,不进 system prompt)。见上面
+    // turnContextCache 一段的注释。
+    api.on("before_prompt_build", async (event, ctx) => {
+      const sid = sessionIdOf(event, ctx);
+      if (!sid) return;
+      const query = lastUserMessageText(event?.messages);
+      if (!query) return;
+
+      let entry = turnContextCache.get(sid);
+      const shouldRefresh = !entry || entry.turnsSinceRefresh >= APPEND_CONTEXT_THROTTLE_TURNS;
+      if (shouldRefresh) {
+        const block = await fetchTurnContextBlock(baseUrl, { userId, agentId }, query, log);
+        if (block === undefined) {
+          // HCC 请求失败:保留旧块(若有),节流计数不清零,下一轮立刻重试
+          // (参考 Hermes _run_prefetch 失败分支不更新 _last_refresh_turn 的做法)。
+        } else if (block) {
+          entry = { text: block, turnsSinceRefresh: 0 };
+          cacheSet(turnContextCache, sid, entry);
+        } else {
+          // 请求成功但没检索到相关记忆:不是故障,清掉旧块——继续注入一条与
+          // 当前问题无关的陈旧记忆,比不注入更容易误导对话。
+          turnContextCache.delete(sid);
+          entry = undefined;
+        }
+      } else {
+        entry.turnsSinceRefresh += 1;
+      }
+      return entry?.text ? { appendContext: entry.text } : undefined;
+    });
+
     api.on("session_end", async (event, ctx) => {
+      const sid = sessionIdOf(event, ctx);
+      // Drop per-session caches for this session — no point keeping a recalled
+      // context block or turn-tail block for a session that just ended.
+      if (sid) {
+        pendingSessionContext.delete(sid);
+        turnContextCache.delete(sid);
+      }
       const content =
         `[OpenClaw session_end] session=${event.sessionId} agent=${ctx.agentId || agentId} ` +
         `messages=${event.messageCount} reason=${event.reason || "unknown"} durationMs=${event.durationMs ?? "?"}`;
@@ -295,8 +469,28 @@ export default {
       }
     });
 
+    // Tools whose output must NEVER be persisted back into HCC. Memory/recall
+    // tools are self-referential — persisting a memory_search result stores a
+    // memory whose content is a quoted list of other memories, which then gets
+    // recalled and re-quoted next turn (a tool-log-of-a-tool-log spiral). The
+    // HCC-side context builder now also drops type=tool_result rows entirely, so
+    // these logs no longer reach prompt injection regardless; this denylist
+    // stops the DB bloat and the recursive-quoting at the source.
+    const TOOL_RESULT_PERSIST_DENYLIST = new Set([
+      "memory_search",
+      "memory_get",
+      "memory_list",
+      "search_memories",
+      "semantic_search",
+      "hybrid_search",
+      "recall",
+      "get_recent_memories",
+      "context",
+    ]);
+
     api.on("tool_result_persist", (event, ctx) => {
       const toolName = event.toolName || ctx.toolName || "unknown_tool";
+      if (TOOL_RESULT_PERSIST_DENYLIST.has(toolName)) return;
       const text = extractMessageText(event.message);
       if (!text) return;
       storeToHcc(baseUrl, {
@@ -304,7 +498,9 @@ export default {
         agentId,
         content: `[OpenClaw tool_result:${toolName}] ${text}`.slice(0, 4000),
         type: "tool_result",
-        tags: ["openclaw", "tool_result", toolName],
+        // Below the gateway's noise-filter threshold (0.5) so these never
+        // surface in search/context. Keep it here and do NOT raise it — the
+        // 252 legacy rows that leaked into context were ones written at >=0.5.
         importance: 0.3,
       }).catch((err) => {
         log.error?.(`[hcc-memory] tool_result_persist store failed: ${err.message}`);
@@ -337,8 +533,19 @@ export default {
                 }));
               },
               async readFile({ relPath }) {
-                const data = await hccFetch(baseUrl, "/memory/recent?limit=200", { method: "GET" });
-                const found = (data.items || []).find((m) => m.id === relPath);
+                // Scoped blank-query search with pagination (search limit caps
+                // at 100 — see memory_get note) instead of unscoped
+                // /memory/recent.
+                let found = null;
+                for (let offset = 0; offset < 1000 && !found; offset += 100) {
+                  const data = await hccFetch(baseUrl, "/memory/search", {
+                    method: "POST",
+                    body: { query: "", user_id: userId, agent_id: scopedAgentId, limit: 100, offset },
+                  });
+                  const items = data.items || [];
+                  found = items.find((m) => m.id === relPath) || null;
+                  if (items.length < 100) break;
+                }
                 return { text: found ? found.content : "", path: relPath, truncated: false };
               },
               status() {

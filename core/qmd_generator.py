@@ -284,12 +284,24 @@ class QMDGenerator:
     # Data access
     # ------------------------------------------------------------------
     async def _fetch_memories(self) -> list[Memory]:
-        """Load all active memories from PostgreSQL, oldest first."""
+        """Load active, knowledge-worthy memories from PostgreSQL, oldest first.
+
+        Selection (2026-08-09 排查 P0-1): a memory is distilled into a knowledge
+        document when it is ``shared=true`` **or** its ``importance`` clears
+        ``qmd_min_importance``. The generator historically required
+        ``shared=true`` alone, but every OpenClaw/Hermes-synced memory is stored
+        ``shared=false``, so the export set was empty and the KB produced 0 docs.
+        Gating on importance keeps raw low-value chatter out while still
+        capturing the high-signal minority. ``tool_result`` rows (raw tool logs)
+        are excluded outright regardless of importance.
+        """
+        threshold = self._settings.qmd_min_importance
         async with self._session_factory() as session:
             result = await session.execute(
                 select(Memory)
                 .where(Memory.status == MemoryStatus.ACTIVE)
-                .where(Memory.shared == True)
+                .where(Memory.type != "tool_result")
+                .where((Memory.shared == True) | (Memory.importance >= threshold))
                 .order_by(Memory.created_at)
             )
             return list(result.scalars().all())

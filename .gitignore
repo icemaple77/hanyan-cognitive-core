@@ -9,3 +9,6 @@ venv/
 .task-briefs/
 .task-logs/
 qmd/
+
+# 临时备份(工作区保留,不入库)
+*.bak-*

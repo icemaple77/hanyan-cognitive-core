@@ -12,7 +12,7 @@ import glob
 import datetime
 import urllib.request
 
-HCC_BASE = os.environ.get("HCC_BASE_URL", "http://localhost:8000")
+HCC_BASE = os.environ.get("HCC_BASE_URL", "http://100.66.103.69:8000")
 BACKUP_DIR = os.path.expanduser("~/.openclaw/workspace/archive/hcc-backups")
 RETAIN_DAYS = 14
 

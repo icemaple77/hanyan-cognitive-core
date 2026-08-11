@@ -33,13 +33,28 @@ from gateway.core.events import get_event_bus
 
 logger = logging.getLogger(__name__)
 
+# 节流:同一秒窗口内的 MEMORY_CREATED 只触发一次情绪更新(2026-08-09 修复)。
+# 背景:OpenClaw 插件 session_end 每轮对话都 store 记忆 → MEMORY_CREATED →
+# update_and_persist 灌一次 soul 偏移;对话频率(秒级) >> decay 频率(小时级),
+# 状态必然饱和到 1.0(named 恒为"依恋")。节流把写入压到最多 1 次/30s,
+# 让 decay 有机会把状态拉回基线。30s 窗口对"情绪随对话渐进变化"足够细,
+# 对"防饱和"足够粗——一次对话的连续几轮会被合并成一次情绪更新。
+_EMOTION_UPDATE_MIN_INTERVAL = 30.0  # 秒
+_last_emotion_update_at: float = 0.0
+
 
 async def _on_memory_created(event: Event) -> None:
+    global _last_emotion_update_at
     content = event.payload.get("content")
     if not content:
         return
     importance = event.payload.get("importance")
     try:
+        import time as _time
+        now = _time.monotonic()
+        if now - _last_emotion_update_at < _EMOTION_UPDATE_MIN_INTERVAL:
+            return  # 节流窗口内,跳过这次情绪更新(记忆仍正常存储,只是不灌情绪)
+        _last_emotion_update_at = now
         await get_emotion_engine().update_and_persist(
             str(content), source="memory_created", importance=importance
         )

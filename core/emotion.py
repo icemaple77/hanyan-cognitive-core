@@ -446,10 +446,14 @@ class EmotionEngine:
         """Gradually decay emotions toward the current baseline."""
         now = datetime.now(timezone.utc)
         hours = (now - self._last_update).total_seconds() / 3600
-        if hours < 0.01:
+        if hours < 0.001:  # 3.6s 内不重复衰减(原来是 0.01h=36s,过宽导致高频写入下衰减被跳过)
             return
 
-        decay_rate = 0.05 * hours  # 5% per hour toward the baseline
+        # 50%/小时 拉回基线(原来是 5%/小时)——高频对话注入(每轮 memory_created
+        # 都调 update)下 5%/h 完全追不上,soul 偏移累积速度 ≈ 10x 衰减速度,
+        # 状态必然饱和到 1.0。0.5/h 让情绪能在几小时内回落,同时保留"情绪有
+        # 记忆、持续数小时"的设定。
+        decay_rate = 0.5 * hours  # 50% per hour toward the baseline
         for dim in self._state:
             target = self._baseline.get(dim, DEFAULT_STATE.get(dim, 0.5))
             self._state[dim] += (target - self._state[dim]) * min(decay_rate, 0.5)

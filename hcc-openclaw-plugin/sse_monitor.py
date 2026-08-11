@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 HCC SSE 事件流常驻监听器
-订阅 <HCC_BASE_URL>/api/v1/events/stream
+订阅 http://100.66.103.69:8000/api/v1/events/stream
 将记忆变更事件 (store/update/delete) 实时归档到本地日志
 """
 import json
@@ -11,11 +11,12 @@ import time
 import datetime
 import urllib.request
 
-STREAM_URL = os.environ.get("HCC_STREAM_URL", "http://localhost:8000/api/v1/events/stream")
+STREAM_URL = os.environ.get("HCC_STREAM_URL", "http://100.66.103.69:8000/api/v1/events/stream")
 LOG_DIR = os.path.expanduser("~/.openclaw/workspace/memory/hcc-events")
 LOG_FILE = os.path.join(LOG_DIR, "hcc-events.log")
 STATE_FILE = os.path.join(LOG_DIR, "last_event.json")
 RECONNECT_DELAY = 5  # 断线重连间隔（秒）
+STREAM_TIMEOUT = 45  # 无数据超时（秒）：服务端 keep-alive 15s，3 倍阈值；超时视为僵尸连接，断开重连
 
 def now_iso():
     return datetime.datetime.now(datetime.timezone.utc).astimezone().isoformat()
@@ -40,7 +41,7 @@ def listen_once():
     """建立一次 SSE 连接，返回是否成功（成功则持续读到断开，失败返回 False）"""
     req = urllib.request.Request(STREAM_URL, headers={"Accept": "text/event-stream"})
     try:
-        with urllib.request.urlopen(req, timeout=None) as resp:
+        with urllib.request.urlopen(req, timeout=STREAM_TIMEOUT) as resp:
             print(f"[{now_iso()}] ✅ SSE 已连接: {STREAM_URL}", flush=True)
             event_name = None
             data_lines = []

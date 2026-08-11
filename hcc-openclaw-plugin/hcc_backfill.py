@@ -20,8 +20,8 @@ import glob
 import datetime
 import urllib.request
 
-HCC_BASE = os.environ.get("HCC_BASE_URL", "http://localhost:8000")
-USER_ID = os.environ.get("HCC_USER_ID", "default")
+HCC_BASE = os.environ.get("HCC_BASE_URL", "http://100.66.103.69:8000")
+USER_ID = os.environ.get("HCC_USER_ID", "michael")
 AGENT_ID = os.environ.get("HCC_AGENT_ID", "openclaw")
 WORKSPACE = os.path.expanduser("~/.openclaw/workspace")
 EVENTS_LOG = os.path.join(WORKSPACE, "memory/hcc-events/hcc-events.log")

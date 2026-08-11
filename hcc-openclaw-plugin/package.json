@@ -4,27 +4,7 @@
   "description": "OpenClaw memory plugin backed by HCC (Hanyan Cognitive Core) REST API",
   "type": "module",
   "main": "./index.js",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/icemaple77/hcc-openclaw-plugin.git"
-  },
-  "homepage": "https://github.com/icemaple77/hcc-openclaw-plugin#readme",
-  "bugs": {
-    "url": "https://github.com/icemaple77/hcc-openclaw-plugin/issues"
-  },
-  "keywords": ["openclaw", "openclaw-plugin", "memory", "hcc"],
-  "peerDependencies": {
-    "openclaw": ">=2026.7.1"
-  },
   "openclaw": {
-    "extensions": ["./index.js"],
-    "compat": {
-      "pluginApi": ">=2026.7.1",
-      "minGatewayVersion": "2026.7.1"
-    },
-    "build": {
-      "openclawVersion": "2026.7.1"
-    }
+    "extensions": ["./index.js"]
   }
 }

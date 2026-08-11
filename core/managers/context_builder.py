@@ -192,10 +192,18 @@ class ContextBuilder:
         #    Over-fetch: junk/tool_result rows are filtered out at render time
         #    (see _headline), so ask for a wider pool than `limit` or those
         #    dropped rows would starve the injected block below its cap.
-        memory_query = SearchQuery(
-            query=query, user_id=user_id, limit=max(limit * 3, limit)
-        )
-        memory_result = await self._memory.search(memory_query)
+        #    Cross-scope (P1-3): 公子's memories are split across user_id scopes
+        #    (michael + the Feishu/Hermes open_id), so search every scope in the
+        #    identity group and merge, keeping the primary scope's results first.
+        pool = max(limit * 3, limit)
+        scopes = self._identity_scopes(user_id)
+        if len(scopes) == 1:
+            memory_result = await self._memory.search(
+                SearchQuery(query=query, user_id=user_id, limit=pool)
+            )
+            memory_items = memory_result.items
+        else:
+            memory_items = await self._search_scopes(query, scopes, pool)
 
         # 2. Knowledge base context.
         knowledge_query = SearchQuery(query=query, limit=limit)
@@ -209,9 +217,9 @@ class ContextBuilder:
         # 4. Assemble sources + metadata.
         sources = [
             {
-                "provider": memory_result.provider or "memory",
+                "provider": self._memory.provider.name,
                 "type": "memory",
-                "items": memory_result.items,
+                "items": memory_items,
             },
             {
                 "provider": knowledge_result.provider or "knowledge_qmd",
@@ -230,7 +238,7 @@ class ContextBuilder:
         }
 
         context_text = self._render_context(
-            memory_items=memory_result.items,
+            memory_items=memory_items,
             knowledge_items=knowledge_result.items,
             emotion_state=emotion_state,
             memory_limit=limit,
@@ -246,6 +254,53 @@ class ContextBuilder:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _identity_scopes(self, user_id: str) -> list[str]:
+        """Return the user_id scopes to search for ``user_id``.
+
+        Expands the primary id into its configured identity group (P1-3), always
+        with the primary first and duplicates removed. Falls back to just
+        ``[user_id]`` when no group is configured.
+        """
+        try:
+            aliases = core_settings.identity_aliases.get(user_id, [])
+        except Exception:  # noqa: BLE001 — never let config shape break retrieval
+            aliases = []
+        ordered = [user_id, *(a for a in aliases if a != user_id)]
+        seen: set[str] = set()
+        return [s for s in ordered if not (s in seen or seen.add(s))]
+
+    async def _search_scopes(
+        self, query: str, scopes: list[str], pool: int
+    ) -> list[dict[str, Any]]:
+        """Search each scope and merge, primary scope first, deduped by id.
+
+        Each scope keeps its own relevance ranking; scopes are concatenated in
+        order (primary owner's memories lead), so cross-scope recall is additive
+        rather than reshuffling the primary results.
+        """
+        results = await asyncio.gather(
+            *(
+                self._memory.search(
+                    SearchQuery(query=query, user_id=scope, limit=pool)
+                )
+                for scope in scopes
+            ),
+            return_exceptions=True,
+        )
+        merged: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for scope, result in zip(scopes, results):
+            if isinstance(result, Exception):
+                logger.warning("scope search failed for %s: %s", scope, result)
+                continue
+            for item in result.items:
+                mid = item.get("id")
+                if mid in seen_ids:
+                    continue
+                seen_ids.add(mid)
+                merged.append(item)
+        return merged
+
     async def _resolve_emotion(self, user_id: str) -> dict[str, Any] | None:
         """Invoke the (sync or async) emotion provider defensively."""
         try:

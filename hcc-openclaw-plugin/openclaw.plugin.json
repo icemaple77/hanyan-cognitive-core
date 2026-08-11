@@ -17,7 +17,7 @@
     "properties": {
       "baseUrl": {
         "type": "string",
-        "description": "HCC gateway base URL, e.g. http://localhost:8000"
+        "description": "HCC gateway base URL, e.g. http://100.66.103.69:8000"
       },
       "userId": {
         "type": "string",
@@ -26,6 +26,24 @@
       "agentId": {
         "type": "string",
         "description": "HCC agent_id to scope memories under"
+      },
+      "sessionRecallEnabled": {
+        "type": "boolean",
+        "description": "Enable session_start auto-recall + prependSystemContext injection (default true)"
+      },
+      "sessionRecallLimit": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Max auto-recalled memories injected at session start (default 5)"
+      },
+      "emotionEnabled": {
+        "type": "boolean",
+        "description": "Enable emotion warm-start at session start and emotion write-back at session end (default true)"
+      },
+      "fetchTimeoutMs": {
+        "type": "integer",
+        "minimum": 500,
+        "description": "Abort timeout for HCC API calls, ms (default 8000)"
       }
     }
   }
