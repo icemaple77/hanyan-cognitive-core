@@ -137,15 +137,22 @@ async def recall(
         async with async_session() as session:
             service = MemoryService(session)
 
-            class _KeywordProvider:
+            # P0-1 fix: 三层检索的 preconscious/subconscious 两层原本接的是
+            # service.search 的 ILIKE 子串匹配——对多词/自然语言 query 几乎必然
+            # 空手而归("%含烟 是谁 人格%" 要求整句连续出现,库里永远没有)。
+            # 服务端已有 hybrid_search(BM25 + 向量 + RRF),这里改走它:传 query
+            # 文本即可,向量分支服务端自嵌;degrade 成纯 BM25 也仍比子串强。
+            class _HybridProvider:
                 async def search(self, query: str, user_id=None, agent_id=None, limit: int = 10):
-                    q = MemorySearch(query=query, user_id=user_id, agent_id=agent_id, limit=limit)
-                    memories, _ = await service.search(q)
-                    return {"items": [_serialize(m) for m in memories]}
+                    fused = await service.hybrid_search(
+                        query=query, limit=limit,
+                        user_id=user_id, agent_id=agent_id,
+                    )
+                    return {"items": [_serialize(item["memory"]) for item in fused]}
 
             sub = get_subconscious()
             sub.add_to_conscious(query, "mcp")
-            results = await sub.retrieve(query, memory_provider=_KeywordProvider(), limit=limit,
+            results = await sub.retrieve(query, memory_provider=_HybridProvider(), limit=limit,
                                          user_id=user_id, agent_id=agent_id)
             return _ok(results=[
                 {"content": r.content, "source": r.source, "score": r.score,

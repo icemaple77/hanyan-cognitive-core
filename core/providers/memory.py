@@ -18,6 +18,7 @@ Configuration
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -167,7 +168,26 @@ class MemoryProvider(Provider):
     # Store
     # ------------------------------------------------------------------
     async def store(self, data: StoreData) -> StoreResult:
-        """Create a new :class:`Memory` row (with a computed embedding)."""
+        """Create a new :class:`Memory` row (with a computed embedding).
+
+        P1-4/P2-5/P0-2 fix: embed off the event loop (``embed_text`` makes a
+        blocking 30s-timeout HTTP call to ollama that would otherwise freeze
+        the whole loop), embed ``content+summary`` to match
+        ``MemoryService.create`` (so the same memory gets the same vector no
+        matter which path stored it), and tolerate an embedding failure by
+        storing ``NULL`` instead of letting it raise — mirroring create()'s
+        null-embedding safety. Since P0-2 made ``embed_text`` raise on ollama
+        failure (rather than poisoning the column with a hash vector), this
+        guard is what stops that from hard-failing the store.
+        """
+        text = f"{data.content}\n{data.summary or ''}".strip()
+        try:
+            embedding = await asyncio.to_thread(embed_text, text)
+        except Exception:
+            logger.exception(
+                "MemoryProvider.store: embed_text failed — storing without embedding"
+            )
+            embedding = None
         memory = Memory(
             user_id=data.user_id,
             type=data.type,
@@ -177,7 +197,7 @@ class MemoryProvider(Provider):
             tags=list(data.tags or []),
             source=data.source,
             status=MemoryStatus.ACTIVE,
-            embedding=embed_text(data.content),
+            embedding=embedding,
         )
         async with self._session_factory() as session:
             session.add(memory)
@@ -205,9 +225,6 @@ class MemoryProvider(Provider):
             if memory is None:
                 return StoreResult(id=data.id, success=False, provider=self.name)
 
-            if data.content is not None:
-                memory.content = data.content
-                memory.embedding = embed_text(data.content)
             if data.summary is not None:
                 memory.summary = data.summary
             if data.importance is not None:
@@ -216,6 +233,22 @@ class MemoryProvider(Provider):
                 memory.tags = list(data.tags)
             if data.status is not None:
                 memory.status = data.status
+
+            # Recompute the embedding only when content changed, off the event
+            # loop, from the final content+summary (matching store()/create()),
+            # tolerating failure with a NULL rather than poisoning the column
+            # or hard-failing the update (see store() for the full rationale).
+            if data.content is not None:
+                memory.content = data.content
+                text = f"{memory.content}\n{memory.summary or ''}".strip()
+                try:
+                    memory.embedding = await asyncio.to_thread(embed_text, text)
+                except Exception:
+                    logger.exception(
+                        "MemoryProvider.update: embed_text failed for %s — leaving embedding NULL",
+                        data.id,
+                    )
+                    memory.embedding = None
 
             try:
                 await session.flush()

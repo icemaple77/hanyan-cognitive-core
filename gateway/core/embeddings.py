@@ -68,21 +68,32 @@ def _embed_hash(text: str, dim: int) -> list[float]:
 
 
 def _embed_ollama(text: str) -> list[float]:
-    """Embed using Ollama API."""
+    """Embed using Ollama API.
+
+    P0-2 fix: on failure this now *raises* instead of silently returning a
+    hash-space vector. The old fallback wrote a vector from a completely
+    different embedding space into the same pgvector column that every other
+    row treats as ollama-space — poisoning it so it could never again match
+    semantically, with no marker to tell it apart. Worse, it defeated the
+    null-embedding safety in MemoryService.create (which catches embed
+    failures and stores NULL): create never saw the failure because this
+    function swallowed it and handed back a plausible-looking vector.
+
+    Callers that can tolerate a missing vector already catch this
+    (MemoryService.create → stores NULL; hybrid_search → BM25-only). Let it
+    propagate to them rather than corrupting the column. A deployment that
+    genuinely wants the hash backend sets HCC_EMBEDDING_PROVIDER=hash, which
+    routes here-around entirely.
+    """
     import httpx
 
-    try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE_URL}/api/embeddings",
-            json={"model": EMBEDDING_MODEL, "prompt": text},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json()["embedding"]
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Ollama embedding failed: {e}, falling back to hash")
-        return _embed_hash(text, EMBEDDING_DIM)
+    resp = httpx.post(
+        f"{OLLAMA_BASE_URL}/api/embeddings",
+        json={"model": EMBEDDING_MODEL, "prompt": text},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["embedding"]
 
 
 def _embed_sentence(text: str, dim: int) -> list[float]:
