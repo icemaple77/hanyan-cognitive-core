@@ -22,6 +22,13 @@ function resolveConfig(api) {
     sessionRecallLimit: cfg.sessionRecallLimit || Number(process.env.HCC_SESSION_RECALL_LIMIT) || DEFAULT_SESSION_RECALL_LIMIT,
     emotionEnabled: cfg.emotionEnabled ?? !truthyEnv(process.env.HCC_EMOTION_DISABLED) ?? true,
     fetchTimeoutMs: cfg.fetchTimeoutMs || Number(process.env.HCC_FETCH_TIMEOUT_MS) || DEFAULT_FETCH_TIMEOUT_MS,
+    // When on (default), *active* memory reads (memory_search / memory_get /
+    // capability search) drop the agent filter so openclaw can retrieve
+    // memories written by hermes / claude-code(hanyan) too — honouring 公子's
+    // "three runtimes share one memory" rule. Writes and emotion stay scoped to
+    // this agent. Set false (or HCC_CROSS_AGENT_SEARCH_DISABLED=1) to box search
+    // back to this agent's own memories.
+    crossAgentSearch: cfg.crossAgentSearch ?? !truthyEnv(process.env.HCC_CROSS_AGENT_SEARCH_DISABLED),
   };
 }
 
@@ -266,8 +273,12 @@ export default {
   description: "Bridges OpenClaw memory to HCC (Hanyan Cognitive Core) REST API",
 
   register(api) {
-    const { baseUrl, userId, agentId, sessionRecallEnabled, sessionRecallLimit, emotionEnabled, fetchTimeoutMs } = resolveConfig(api);
+    const { baseUrl, userId, agentId, sessionRecallEnabled, sessionRecallLimit, emotionEnabled, fetchTimeoutMs, crossAgentSearch } = resolveConfig(api);
     activeFetchTimeoutMs = fetchTimeoutMs;
+    // null agent_id = no agent filter server-side (gateway hybrid_search/search
+    // skip the filter when agent_id is null — see P1-3). Used for active reads
+    // only; writes/emotion keep `agentId`.
+    const searchAgentId = crossAgentSearch ? null : agentId;
     const log = api.logger || console;
 
     api.registerTool({
@@ -284,7 +295,7 @@ export default {
               query: params.query,
               limit: params.maxResults || 10,
               user_id: userId,
-              agent_id: agentId,
+              agent_id: searchAgentId,
             },
           });
           const items = (data.items || []).map((it) => ({
@@ -319,7 +330,7 @@ export default {
             for (let offset = 0; offset < 1000 && !found; offset += 100) {
               const data = await hccFetch(baseUrl, "/memory/search", {
                 method: "POST",
-                body: { query: "", user_id: userId, agent_id: agentId, limit: 100, offset },
+                body: { query: "", user_id: userId, agent_id: searchAgentId, limit: 100, offset },
               });
               const items = data.items || [];
               found = items.find((m) => m.id === params.id) || null;
@@ -329,7 +340,7 @@ export default {
             // id not in the scoped window: try content search as a last resort
             const searchData = await hccFetch(baseUrl, "/memory/search", {
               method: "POST",
-              body: { query: params.id, user_id: userId, agent_id: agentId, limit: 1 },
+              body: { query: params.id, user_id: userId, agent_id: searchAgentId, limit: 1 },
             });
             const byId = searchData.items?.[0];
             return jsonResult({ found: Boolean(byId && byId.id === params.id), memory: byId && byId.id === params.id ? byId : null });
@@ -337,7 +348,7 @@ export default {
           if (params.content) {
             const data = await hccFetch(baseUrl, "/memory/search", {
               method: "POST",
-              body: { query: params.content, user_id: userId, agent_id: agentId, limit: 1 },
+              body: { query: params.content, user_id: userId, agent_id: searchAgentId, limit: 1 },
             });
             const found = data.items?.[0] || null;
             return jsonResult({ found: Boolean(found), memory: found });
@@ -514,7 +525,9 @@ export default {
       api.registerMemoryCapability({
       runtime: {
         async getMemorySearchManager({ agentId: reqAgentId } = {}) {
-          const scopedAgentId = reqAgentId || agentId;
+          // Explicit caller-supplied agent wins; otherwise fall back to the
+          // cross-agent read scope (null when crossAgentSearch is on).
+          const scopedAgentId = reqAgentId || searchAgentId;
           return {
             manager: {
               async search(query, opts = {}) {

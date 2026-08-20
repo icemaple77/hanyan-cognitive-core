@@ -44,6 +44,10 @@
         "type": "integer",
         "minimum": 500,
         "description": "Abort timeout for HCC API calls, ms (default 8000)"
+      },
+      "crossAgentSearch": {
+        "type": "boolean",
+        "description": "When true (default), active memory reads (memory_search / memory_get / capability search) drop the agent_id filter so this runtime can retrieve memories written by the other runtimes sharing this HCC (hermes / claude-code / hanyan). Writes and emotion stay scoped to agentId. Set false to box search to this agent's own memories."
       }
     }
   }

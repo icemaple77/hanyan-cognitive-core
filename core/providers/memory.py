@@ -66,6 +66,7 @@ def _memory_to_dict(memory: Memory) -> dict[str, Any]:
     return {
         "id": memory.id,
         "user_id": memory.user_id,
+        "agent_id": memory.agent_id,
         "type": memory.type,
         "content": memory.content,
         "summary": memory.summary,
@@ -73,6 +74,9 @@ def _memory_to_dict(memory: Memory) -> dict[str, Any]:
         "tags": list(memory.tags or []),
         "source": memory.source,
         "status": memory.status,
+        "access_count": memory.access_count,  # P2-7: was missing here while the
+        # MCP _serialize path exposed it — two read paths returned different field
+        # sets for the same row. Aligned so SDK callers see access_count too.
         "created_at": memory.created_at.isoformat() if memory.created_at else None,
         "updated_at": memory.updated_at.isoformat() if memory.updated_at else None,
     }
@@ -130,6 +134,7 @@ class MemoryProvider(Provider):
                     query=query.query,
                     limit=query.limit,
                     user_id=query.user_id,
+                    agent_id=query.agent_id,
                     type=query.type,
                 )
                 items = [_memory_to_dict(item["memory"]) for item in fused]
@@ -145,6 +150,9 @@ class MemoryProvider(Provider):
             if query.user_id:
                 stmt = stmt.where(Memory.user_id == query.user_id)
                 count_stmt = count_stmt.where(Memory.user_id == query.user_id)
+            if query.agent_id:
+                stmt = stmt.where(Memory.agent_id == query.agent_id)
+                count_stmt = count_stmt.where(Memory.agent_id == query.agent_id)
             if query.type:
                 stmt = stmt.where(Memory.type == query.type)
                 count_stmt = count_stmt.where(Memory.type == query.type)
@@ -190,6 +198,8 @@ class MemoryProvider(Provider):
             embedding = None
         memory = Memory(
             user_id=data.user_id,
+            agent_id=data.agent_id,  # P1-3: was dropped → every SDK-stored row
+            # silently landed in agent_id="default"; now honours the caller's scope.
             type=data.type,
             content=data.content,
             summary=data.summary,

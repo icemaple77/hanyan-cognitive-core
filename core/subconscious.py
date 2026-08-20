@@ -138,19 +138,29 @@ class Subconscious:
                     last_access_days=0,
                 ))
 
-        # Layer 2: Preconscious — search memory provider for recent/important items
+        # Layers 2+3: durable memory from the provider.
+        #
+        # P2-6 fix: this used to fire TWO identical provider.search(query,
+        # user_id, agent_id) calls — one tagged "preconscious" (score 0.7,
+        # limit*2), one tagged "subconscious" (score 0.4, limit) — against the
+        # same backend with the same query. Since the provider is deterministic
+        # they returned the same rows, and _rrf_merge's content-dedup then
+        # collapsed each pair to the higher-scored ("preconscious") copy. So the
+        # second query was pure wasted DB load (and, post P0-1, a second
+        # embedding+BM25+RRF round). Query once at limit*2; the provider already
+        # returns rows in hybrid-RRF relevance order, so arrival order is a
+        # meaningful within-source rank for _rrf_merge.
         if memory_provider:
             try:
-                preconscious = await memory_provider.search(
+                resp = await memory_provider.search(
                     query=query, user_id=user_id, agent_id=agent_id, limit=limit * 2
                 )
-                items = preconscious.get("items", []) if isinstance(preconscious, dict) else (preconscious if isinstance(preconscious, list) else [])
+                items = resp.get("items", []) if isinstance(resp, dict) else (resp if isinstance(resp, list) else [])
                 for item in items:
                     memory_id = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
                     content = item.get("content") if isinstance(item, dict) else getattr(item, "content", "")
                     importance = item.get("importance", 0.5) if isinstance(item, dict) else getattr(item, "importance", 0.5)
                     tags = item.get("tags", []) if isinstance(item, dict) else list(getattr(item, "tags", []) or [])
-                    days_since = 0.0
                     results.append(SubconsciousResult(
                         content=str(content)[:200],
                         source="preconscious",
@@ -158,34 +168,10 @@ class Subconscious:
                         memory_id=str(memory_id) if memory_id else None,
                         tags=list(tags) if tags else [],
                         importance=float(importance),
-                        last_access_days=days_since,
+                        last_access_days=0.0,
                     ))
             except Exception as e:
-                logger.warning("subconscious preconscious search failed: %s", e)
-
-        # Layer 3: Subconscious — search with higher decay tolerance
-        if memory_provider:
-            try:
-                subconscious = await memory_provider.search(
-                    query=query, user_id=user_id, agent_id=agent_id, limit=limit
-                )
-                items = subconscious.get("items", []) if isinstance(subconscious, dict) else (subconscious if isinstance(subconscious, list) else [])
-                for item in items:
-                    memory_id = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
-                    content = item.get("content") if isinstance(item, dict) else getattr(item, "content", "")
-                    importance = item.get("importance", 0.5) if isinstance(item, dict) else getattr(item, "importance", 0.5)
-                    tags = item.get("tags", []) if isinstance(item, dict) else list(getattr(item, "tags", []) or [])
-                    results.append(SubconsciousResult(
-                        content=str(content)[:200],
-                        source="subconscious",
-                        score=0.4,
-                        memory_id=str(memory_id) if memory_id else None,
-                        tags=list(tags) if tags else [],
-                        importance=float(importance),
-                        last_access_days=30.0,
-                    ))
-            except Exception as e:
-                logger.warning("subconscious deep search failed: %s", e)
+                logger.warning("subconscious memory search failed: %s", e)
 
         # Merge with RRF scoring
         return self._rrf_merge(results, limit, emotion_state)
