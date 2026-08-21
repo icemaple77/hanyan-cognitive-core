@@ -130,11 +130,15 @@ class _DBMemoryProvider:
 
     async def search(self, query: str, user_id: str | None = None,
                      agent_id: str | None = None, limit: int = 10) -> dict:
-        q = MemorySearch(query=query, user_id=user_id, agent_id=agent_id, limit=limit)
-        memories, _total = await self.service.search(q)
+        # P0-1 fix: 原本用 service.search 的 ILIKE 子串匹配,对自然语言 query
+        # 几乎必然零命中,三层检索的 DB 两层形同虚设。改走 hybrid_search
+        # (BM25 + 向量 + RRF,服务端自嵌 query),与 MCP recall 保持一致。
+        fused = await self.service.hybrid_search(
+            query=query, limit=limit, user_id=user_id, agent_id=agent_id,
+        )
         return {"items": [
             {"id": m.id, "content": m.content, "importance": m.importance, "tags": m.tags or []}
-            for m in memories
+            for m in (item["memory"] for item in fused)
         ]}
 
 
