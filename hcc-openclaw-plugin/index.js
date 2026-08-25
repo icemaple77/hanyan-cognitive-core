@@ -499,11 +499,23 @@ export default {
       "context",
     ]);
 
+    // Content-based guard (2026-08-26): the denylist above stops the memory_*
+    // TOOLS, but openclaw also searches memory via `exec` (a shell script /
+    // curl that dumps HCC results), and exec output IS persisted. Those dumps
+    // quote other memories ("匹配度 N" / re-nested "[OpenClaw tool_result:…]" /
+    // "source=openclaw_sync"), reigniting the exact recursive-quoting spiral —
+    // just through a tool the name-denylist can't see. This signature check
+    // drops any tool_result whose CONTENT is a memory-search dump, regardless
+    // of which tool produced it, killing the recursion at the true source.
+    const MEMORY_DUMP_RE =
+      /匹配度\s*\d|── 匹配度|\[OpenClaw tool_result:|source=(?:openclaw_sync|openclaw_plugin|mcp|hermes)\b/;
+
     api.on("tool_result_persist", (event, ctx) => {
       const toolName = event.toolName || ctx.toolName || "unknown_tool";
       if (TOOL_RESULT_PERSIST_DENYLIST.has(toolName)) return;
       const text = extractMessageText(event.message);
       if (!text) return;
+      if (MEMORY_DUMP_RE.test(text)) return;   // 记忆搜索转储 → 不入库(杜绝递归)
       storeToHcc(baseUrl, {
         userId,
         agentId,

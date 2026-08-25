@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 LOW_TRUST_TYPES = {"tool_result"}
 LOW_TRUST_SOURCES = {"openclaw_plugin"}
 
+# Low-trust rows are LOGS, not curated knowledge. Even a keep-verdict must never
+# score them high enough to surface in search: a tool_result that quotes real
+# memories (a search dump) reads as "informative" to the evaluator and used to
+# get boosted to ~0.85, leaking into retrieval. 2026-08-26: 870 such rows had
+# been inflated this way (then purged); cap keep-verdicts below the search-drop
+# threshold (0.5) so a log can never be re-inflated to a surfacing score again.
+LOW_TRUST_IMPORTANCE_CAP = 0.4
+
 
 def _is_low_trust(payload: dict) -> bool:
     return payload.get("type") in LOW_TRUST_TYPES or payload.get("source") in LOW_TRUST_SOURCES
@@ -82,10 +90,11 @@ async def _on_memory_created(event: Event) -> None:
 
     try:
         if decision.keep:
-            await _update_importance(memory_id, decision.importance)
+            capped = min(decision.importance, LOW_TRUST_IMPORTANCE_CAP)  # 低信任日志封顶,永不浮出检索
+            await _update_importance(memory_id, capped)
             logger.info(
-                "noise_filter: kept memory_id=%s importance=%s->%.2f (verdict=%s)",
-                memory_id, payload.get("importance"), decision.importance, decision.source,
+                "noise_filter: kept memory_id=%s importance=%s->%.2f (capped from %.2f, verdict=%s)",
+                memory_id, payload.get("importance"), capped, decision.importance, decision.source,
             )
         else:
             await _mark_discarded(memory_id)
