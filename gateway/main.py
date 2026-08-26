@@ -21,7 +21,7 @@ from core.emotion import get_emotion_engine
 from core.emotion_events import subscribe_emotion_events
 from core.noise_filter_events import subscribe_noise_filter_events
 from core.sync_engine import SyncEngine
-from gateway.api import health, memory_routes, context_routes, graph_routes, emotion_routes, cognitive_routes, document_routes, events_routes, sync_routes, dream_routes, vault_routes, export_routes
+from gateway.api import health, memory_routes, context_routes, graph_routes, emotion_routes, cognitive_routes, document_routes, events_routes, sync_routes, dream_routes, vault_routes, export_routes, task_routes
 from gateway.core.database import engine, Base
 from gateway.core.events import get_event_bus
 
@@ -192,3 +192,4 @@ app.include_router(sync_routes.router, prefix="/api/v1", tags=["sync"])
 app.include_router(dream_routes.router, prefix="/api/v1", tags=["dream"])
 app.include_router(vault_routes.router, prefix="/api/v1", tags=["vault"])
 app.include_router(export_routes.router, prefix="/api/v1", tags=["export"])
+app.include_router(task_routes.router, prefix="/api/v1", tags=["tasks"])

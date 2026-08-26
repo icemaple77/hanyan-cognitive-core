@@ -1,3 +1,7 @@
+import { readFile, stat } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 const DEFAULT_BASE_URL = "http://100.66.103.69:8000";
 const SOUL_BASE_URL = "http://100.66.103.69:8732"; // soul 实时情绪(方案A): Mac MLX 17维
 const DEFAULT_USER_ID = "michael";
@@ -6,6 +10,15 @@ const DEFAULT_SESSION_RECALL_LIMIT = 5;
 const DEFAULT_SESSION_RECALL_FETCH = 20; // pool fetched before ranking by importance, see buildSessionContext
 const DEFAULT_FETCH_TIMEOUT_MS = 8000; // abort a hung HCC request before it stalls prompt building
 const CACHE_MAX_SESSIONS = 100; // FIFO cap for both pendingSessionContext and turnContextCache
+
+// P3-2: shared with sse_monitor.py (same default dir) — the monitor touches
+// cache_invalidate.marker's mtime on every memory.created/updated/deleted
+// event; before_prompt_build's turnContextCache read below compares its own
+// cachedAt against this mtime to force an early refresh instead of waiting
+// out the turn-throttle when memory actually changed underneath it.
+const HCC_EVENTS_DIR =
+  process.env.HCC_EVENTS_DIR || path.join(os.homedir(), ".openclaw/workspace/memory/hcc-events");
+const CACHE_INVALIDATE_MARKER = path.join(HCC_EVENTS_DIR, "cache_invalidate.marker");
 
 // Effective timeout, overridable via config/env (see resolveConfig). hccFetch
 // falls back to this when a call doesn't pass timeoutMs explicitly.
@@ -83,6 +96,131 @@ function extractMessageText(message) {
   return "";
 }
 
+// --- P3-1: session_end / before_compaction conversation persistence ---
+//
+// Before this, session_end/before_compaction only wrote a one-line metadata
+// string ("session=x messages=N") — none of the actual conversation ever
+// reached HCC, so it couldn't become shared cross-runtime memory. Neither
+// hook's event carries a plain `messages` array reliably though: session_end
+// only ever gives a `sessionFile` (JSONL transcript path) to read from disk;
+// before_compaction sometimes carries `event.messages` directly (in-memory
+// harness path) and sometimes only `sessionFile` or neither (see OpenClaw's
+// several before_compaction call sites — messageCount-only variants exist).
+// resolveConversationMessages() below tries the in-memory array first, falls
+// back to reading the transcript file, and returns [] if neither is present
+// (metadata-only write still happens either way).
+const CONVERSATION_EXCERPT_MAX_CHARS = 2000;
+const CONVERSATION_SAMPLE_CAP = 12; // head+mid+tail sample size before truncation
+
+function messagesFromEventArray(rawMessages) {
+  if (!Array.isArray(rawMessages)) return [];
+  return rawMessages
+    .map((m) => ({ role: m?.role, text: extractMessageText(m).trim() }))
+    .filter((m) => (m.role === "user" || m.role === "assistant") && m.text);
+}
+
+async function messagesFromSessionFile(sessionFile) {
+  if (!sessionFile) return [];
+  let raw;
+  try {
+    raw = await readFile(sessionFile, "utf-8");
+  } catch {
+    return []; // file gone / archived elsewhere / not readable — degrade to metadata-only
+  }
+  const messages = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (obj?.type !== "message") continue;
+    const role = obj.message?.role;
+    if (role !== "user" && role !== "assistant") continue;
+    const text = extractMessageText(obj.message).trim();
+    if (text) messages.push({ role, text });
+  }
+  return messages;
+}
+
+async function resolveConversationMessages(event) {
+  const fromEvent = messagesFromEventArray(event?.messages);
+  if (fromEvent.length) return fromEvent;
+  return messagesFromSessionFile(event?.sessionFile);
+}
+
+// 去重:相邻重复消息(如心跳轮询反复产生的相同文本)只保留一条。
+function dedupeConsecutive(messages) {
+  const out = [];
+  for (const m of messages) {
+    const prev = out[out.length - 1];
+    if (prev && prev.role === m.role && prev.text === m.text) continue;
+    out.push(m);
+  }
+  return out;
+}
+
+// 取首尾 + 中间抽样,而不是简单截断——避免一段长会话只留下开头或结尾。
+function sampleMessages(messages) {
+  if (messages.length <= CONVERSATION_SAMPLE_CAP) return messages;
+  const head = messages.slice(0, 2);
+  const midIdx = Math.floor(messages.length / 2);
+  const mid = messages.slice(Math.max(midIdx - 1, 2), midIdx + 1);
+  const tailCount = Math.max(CONVERSATION_SAMPLE_CAP - head.length - mid.length, 0);
+  const tail = tailCount ? messages.slice(-tailCount) : [];
+  return [...head, ...mid, ...tail];
+}
+
+function renderConversationExcerpt(messages) {
+  const sampled = sampleMessages(dedupeConsecutive(messages));
+  const lines = sampled.map((m) => `${m.role}: ${m.text.replace(/\s+/g, " ").slice(0, 400)}`);
+  const text = lines.join("\n");
+  // 内容过长时保留结尾(最近发生的内容),而不是开头。
+  return text.length > CONVERSATION_EXCERPT_MAX_CHARS ? text.slice(-CONVERSATION_EXCERPT_MAX_CHARS) : text;
+}
+
+// 幂等:marker 里带 session_id + 该次快照的消息数,同一状态重复触发(如
+// before_compaction 在几乎无新消息时又跑一次)会命中已存的 marker 而跳过;
+// 会话真正推进(消息数变化)才会产生新的快照,而不是被 session_id 单独锁死。
+async function conversationAlreadyStored(baseUrl, { userId, agentId }, marker) {
+  try {
+    const data = await hccFetch(baseUrl, "/memory/search", {
+      method: "POST",
+      body: { query: marker, user_id: userId, agent_id: agentId, type: "conversation", limit: 1 },
+    });
+    return (data.items || []).length > 0;
+  } catch {
+    return false; // 探测失败按"未写入"处理——宁可偶尔重复,不可漏记
+  }
+}
+
+async function storeConversationSnapshot(baseUrl, { userId, agentId }, { sessionId, reason, event }, log) {
+  if (!sessionId) return;
+  const messages = await resolveConversationMessages(event);
+  if (!messages.length) return;
+  const marker = `sid:${sessionId}:mc:${messages.length}`;
+  if (await conversationAlreadyStored(baseUrl, { userId, agentId }, marker)) return;
+  const excerpt = renderConversationExcerpt(messages);
+  if (!excerpt) return;
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const content = `[OpenClaw ${reason}] session=${sessionId}\n${excerpt}\n[marker:${marker}]`;
+  try {
+    await storeToHcc(baseUrl, {
+      userId,
+      agentId,
+      content,
+      summary: excerpt.slice(0, 200),
+      type: "conversation",
+      source: "openclaw_plugin",
+      tags: ["openclaw", "conversation", dateStr],
+    });
+  } catch (err) {
+    log.error?.(`[hcc-memory] ${reason} conversation store failed: ${err.message}`);
+  }
+}
+
 // --- session_start auto-recall (体检报告 P0-2) + emotion warm-start (P1-4) ---
 //
 // OpenClaw's session_start hook fires at session boundaries but is
@@ -119,7 +257,22 @@ function sessionIdOf(event, ctx) {
 // 里,拉不拉新都不影响历史轮次的前缀)。
 const APPEND_CONTEXT_MAX_CHARS = 1500;
 const APPEND_CONTEXT_THROTTLE_TURNS = 3;
-const turnContextCache = new Map(); // sessionId -> { text, turnsSinceRefresh }
+const turnContextCache = new Map(); // sessionId -> { text, turnsSinceRefresh, cachedAt }
+
+// P3-2: sse_monitor.py touches CACHE_INVALIDATE_MARKER's mtime whenever a
+// memory.created/updated/deleted event arrives. If that mtime is newer than
+// this cache entry's cachedAt, memory changed underneath it — force a refresh
+// now instead of waiting out APPEND_CONTEXT_THROTTLE_TURNS. One stat() call,
+// fails open (treat as "not stale") so a missing/unreadable marker file never
+// blocks the turn.
+async function cacheStaleByInvalidationMarker(cachedAt) {
+  try {
+    const st = await stat(CACHE_INVALIDATE_MARKER);
+    return st.mtimeMs > cachedAt;
+  } catch {
+    return false;
+  }
+}
 
 function lastUserMessageText(messages) {
   if (!Array.isArray(messages)) return "";
@@ -417,14 +570,17 @@ export default {
       if (!query) return;
 
       let entry = turnContextCache.get(sid);
-      const shouldRefresh = !entry || entry.turnsSinceRefresh >= APPEND_CONTEXT_THROTTLE_TURNS;
+      const shouldRefresh =
+        !entry ||
+        entry.turnsSinceRefresh >= APPEND_CONTEXT_THROTTLE_TURNS ||
+        (await cacheStaleByInvalidationMarker(entry.cachedAt));
       if (shouldRefresh) {
         const block = await fetchTurnContextBlock(baseUrl, { userId, agentId }, query, log);
         if (block === undefined) {
           // HCC 请求失败:保留旧块(若有),节流计数不清零,下一轮立刻重试
           // (参考 Hermes _run_prefetch 失败分支不更新 _last_refresh_turn 的做法)。
         } else if (block) {
-          entry = { text: block, turnsSinceRefresh: 0 };
+          entry = { text: block, turnsSinceRefresh: 0, cachedAt: Date.now() };
           cacheSet(turnContextCache, sid, entry);
         } else {
           // 请求成功但没检索到相关记忆:不是故障,清掉旧块——继续注入一条与
@@ -454,6 +610,14 @@ export default {
       } catch (err) {
         log.error?.(`[hcc-memory] session_end store failed: ${err.message}`);
       }
+      // P3-1: metadata write above stays as-is; this additionally persists the
+      // actual conversation content so it becomes shared cross-runtime memory.
+      await storeConversationSnapshot(
+        baseUrl,
+        { userId, agentId: ctx.agentId || agentId },
+        { sessionId: event.sessionId, reason: "session_end", event },
+        log
+      );
       // 体检报告 P1-4: write the emotion state back at session end, same text the
       // session summary was built from — update_and_persist folds it into the
       // 6-dim state via keyword/sentiment triggers (core/emotion.py), so the
@@ -479,6 +643,15 @@ export default {
       } catch (err) {
         log.error?.(`[hcc-memory] before_compaction store failed: ${err.message}`);
       }
+      // P3-1: same conversation persistence as session_end — before_compaction
+      // fires repeatedly over a long session, so this is often the ONLY chance
+      // to capture content that gets summarized away by compaction.
+      await storeConversationSnapshot(
+        baseUrl,
+        { userId, agentId: ctx.agentId || agentId },
+        { sessionId: ctx.sessionId || event.sessionId, reason: "before_compaction", event },
+        log
+      );
     });
 
     // Tools whose output must NEVER be persisted back into HCC. Memory/recall

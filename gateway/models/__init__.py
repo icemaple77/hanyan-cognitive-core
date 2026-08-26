@@ -207,3 +207,112 @@ class DreamRun(Base):
     finished_at = Column(DateTime, nullable=True)
     stats = Column(JSON, nullable=False, default=dict)
     narrative_path = Column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Task-Schedule — agent long-task anti-stall (看板卡 t_6b29b140)
+# ---------------------------------------------------------------------------
+# Purpose: hermes/openclaw stall on long tasks — they do one step then yield to
+# idle and wait. Claude Code doesn't, because its harness re-invokes the model
+# after every tool result and it keeps a live TODO list. This pair of tables
+# externalises that so a *fresh, zero-memory* woken session can resume a long
+# task exactly where it left off:
+#   - Task/TaskStep = the persistent TODO (survives compaction/session swap —
+#     the thing an in-context TodoWrite list cannot),
+#   - next_wake_at  = when an external cron should re-invoke the agent (the
+#     substitute for the harness's automatic per-tool-result re-invocation),
+#   - TaskStep.verify_cmd = how the woken session re-derives real progress from
+#     the world (deterministic), since it has no memory of the prior run and
+#     self-reported progress is untrustworthy.
+# The runtime-specific glue (one recurring cron per agent that polls
+# /tasks/due and spawns a session with the wake payload) lives outside HCC.
+
+
+class TaskStatus(StrEnum):
+    """Lifecycle of a whole :class:`Task`."""
+
+    PENDING = "pending"      # registered, no step started yet
+    RUNNING = "running"      # a step is in progress / being heartbeat-driven
+    BLOCKED = "blocked"      # a step exceeded max attempts OR hit a redline — needs human
+    DONE = "done"            # all steps verified complete
+    FAILED = "failed"        # abandoned / unrecoverable
+    CANCELLED = "cancelled"  # explicitly cancelled by owner
+
+
+class StepStatus(StrEnum):
+    """Lifecycle of a single :class:`TaskStep`."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class Task(Base):
+    """One long-running agent task, decomposed into ordered steps.
+
+    ``current_step`` is the 0-based index into the task's steps that the
+    heartbeat is currently driving. ``next_wake_at`` is when the external cron
+    should next re-invoke the owning agent to push this task forward; a NULL
+    means "not currently scheduled" (terminal, or awaiting first start).
+    """
+
+    __tablename__ = "tasks"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(128), index=True, nullable=False)
+    agent_id = Column(String(64), index=True, default="default", nullable=False)
+    title = Column(Text, nullable=False)
+    goal = Column(Text, default="")           # the overall objective, injected into every wake
+    status = Column(String(16), default=TaskStatus.PENDING.value, index=True)
+    current_step = Column(Integer, default=0, nullable=False)
+    # Extra redline keywords for THIS task, on top of the global redline list
+    # (delete / spend money / external send / family domain). A step whose
+    # instruction matches a redline blocks the task for human decision instead
+    # of auto-advancing.
+    redline_tags = Column(JSON, default=list)
+    attempts_on_current = Column(Integer, default=0, nullable=False)  # denormalised for quick due-scan
+    last_heartbeat = Column(DateTime, nullable=True)
+    next_wake_at = Column(DateTime, nullable=True, index=True)        # cron scans WHERE next_wake_at <= now
+    note = Column(Text, default="")           # last progress note / block reason
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','running','blocked','done','failed','cancelled')",
+            name="ck_tasks_status",
+        ),
+    )
+
+
+class TaskStep(Base):
+    """One ordered step of a :class:`Task`.
+
+    ``verify_cmd`` is the deterministic progress probe the woken agent runs in
+    its OWN environment (the logs/artifacts may live on another machine than
+    HCC) — e.g. ``tail -50 ~/train.log | grep -c 'epoch 100'``. ``est_seconds``
+    drives the next wake interval; ``actual_seconds`` is filled on completion to
+    feed future calibration. ``attempts`` counts heartbeats that found the step
+    still unfinished.
+    """
+
+    __tablename__ = "task_steps"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id = Column(String(36), index=True, nullable=False)
+    idx = Column(Integer, nullable=False)         # 0-based order within the task
+    title = Column(Text, nullable=False)
+    instruction = Column(Text, default="")        # what the agent should DO this step
+    verify_cmd = Column(Text, default="")         # deterministic "is it done?" probe (shell)
+    est_seconds = Column(Integer, default=600, nullable=False)
+    actual_seconds = Column(Integer, nullable=True)
+    attempts = Column(Integer, default=0, nullable=False)
+    status = Column(String(16), default=StepStatus.PENDING.value)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "idx", name="uq_task_steps_task_idx"),
+        Index("ix_task_steps_task_id_idx", "task_id", "idx"),
+    )

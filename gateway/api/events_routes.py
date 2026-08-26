@@ -32,11 +32,23 @@ _KEEPALIVE_SECONDS = 15.0
 
 
 def _format_sse(event: Event) -> str:
+    # store_memory's publish_memory_event call forwards user_id/agent_id/type/
+    # tags/importance/source as **extra (see gateway/api/memory_routes.py) —
+    # they were landing in event.payload all along but got dropped here,
+    # leaving consumers (e.g. the OpenClaw sse_monitor) with nothing to key a
+    # local change-index on beyond a bare memory_id. update/delete only ever
+    # publish a subset of these, hence the .get() everywhere.
     data = {
         "action": event.payload.get("action"),
         "memory_id": event.payload.get("memory_id"),
         "timestamp": event.timestamp,
-        "source": event.source,
+        "source": event.source,  # emitting component (event-bus-level), NOT memory.source
+        "user_id": event.payload.get("user_id"),
+        "agent_id": event.payload.get("agent_id"),
+        "type": event.payload.get("type"),
+        "tags": event.payload.get("tags"),
+        "importance": event.payload.get("importance"),
+        "memory_source": event.payload.get("source"),  # memory.source, e.g. "openclaw_plugin"/"mcp"
     }
     return f"event: {event.event_type.value}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
