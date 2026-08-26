@@ -69,6 +69,11 @@ class SubconsciousResult:
     tags: list[str] = field(default_factory=list)
     importance: float = 0.5
     last_access_days: float = 0.0
+    # Memory.source (e.g. "api"/"mcp"/"openclaw_sync") — distinct from the
+    # `source` field above, which is the retrieval-tier label
+    # (conscious/preconscious/subconscious).
+    memory_source: str | None = None
+    created_at: str | None = None
 
 
 class Subconscious:
@@ -161,6 +166,8 @@ class Subconscious:
                     content = item.get("content") if isinstance(item, dict) else getattr(item, "content", "")
                     importance = item.get("importance", 0.5) if isinstance(item, dict) else getattr(item, "importance", 0.5)
                     tags = item.get("tags", []) if isinstance(item, dict) else list(getattr(item, "tags", []) or [])
+                    memory_source = item.get("source") if isinstance(item, dict) else getattr(item, "source", None)
+                    created_at = item.get("created_at") if isinstance(item, dict) else getattr(item, "created_at", None)
                     results.append(SubconsciousResult(
                         content=str(content)[:200],
                         source="preconscious",
@@ -169,6 +176,8 @@ class Subconscious:
                         tags=list(tags) if tags else [],
                         importance=float(importance),
                         last_access_days=0.0,
+                        memory_source=memory_source,
+                        created_at=created_at,
                     ))
             except Exception as e:
                 logger.warning("subconscious memory search failed: %s", e)

@@ -329,6 +329,32 @@ class CoreSettings(BaseSettings):
         "distribution (docs/local-noise-filter.md 三).",
     )
 
+    # --- Retrieval recency / source weighting (P2-7) --------------------
+    # openclaw_sync bulk-migrated ~2000+ historical rows in one shot (same
+    # RRF rank distribution as everything else), so they compete on equal
+    # footing with genuinely new conversation memories at the same topical
+    # relevance — old data drowns out new. This reweights hybrid_search's
+    # already-fused rrf_score (multiplicatively, not a replacement — topical
+    # relevance from BM25+vector stays the primary signal) by how old a
+    # memory is and where it came from.
+    retrieval_recency_weighting_enabled: bool = Field(
+        default=True,
+        description="Master switch for exponential recency decay applied to "
+        "hybrid_search's fused rrf_score (HCC_RETRIEVAL_RECENCY_WEIGHTING_ENABLED).",
+    )
+    retrieval_recency_half_life_days: float = Field(
+        default=60.0, gt=0,
+        description="Half-life in days for the recency decay factor "
+        "(HCC_RETRIEVAL_RECENCY_HALF_LIFE_DAYS) — a memory this old is "
+        "weighted at 0.5x, twice this old at 0.25x, etc.",
+    )
+    retrieval_source_weights: dict[str, float] = Field(
+        default_factory=lambda: {"openclaw_sync": 0.5},
+        description="Per-Memory.source multiplier applied to rrf_score alongside "
+        "recency decay (HCC_RETRIEVAL_SOURCE_WEIGHTS as JSON, e.g. "
+        '\'{"openclaw_sync": 0.5}\'). Sources not listed default to 1.0 (no change).',
+    )
+
     def ttl_for(self, category: str) -> int:
         """Return the default TTL (seconds) for a working-memory ``category``.
 

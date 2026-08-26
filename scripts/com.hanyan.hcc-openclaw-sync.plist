@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd job: periodically run scripts/sync_openclaw_memory.py so newly
+     indexed OpenClaw memory_index_chunks keep flowing into HCC without
+     someone remembering to run the script by hand (P2-10 — "新记忆不入库"
+     root cause: the script existed but nothing scheduled it).
+     Idempotent by design (openclaw_hash: tag dedup, see the script's
+     docstring), so a missed/overlapping run is harmless — safe to run on a
+     plain fixed interval rather than needing lock/skip logic here.
+
+     Uses system /usr/bin/python3 (stdlib + requests only, per the script's
+     docstring — confirmed present: requests 2.32.5). Does NOT use the HCC
+     .venv, which does not have requests installed.
+
+     Install:  cp scripts/com.hanyan.hcc-openclaw-sync.plist ~/Library/LaunchAgents/
+               launchctl load ~/Library/LaunchAgents/com.hanyan.hcc-openclaw-sync.plist
+     Stop:     launchctl unload ~/Library/LaunchAgents/com.hanyan.hcc-openclaw-sync.plist
+     Or use scripts/install_openclaw_sync.sh, which does the same two steps.
+
+     Before installing: confirm this doesn't duplicate work already done by
+     ~/.openclaw/scripts/memory-bridge.js on the N100 host (pid 5934 there,
+     not present on this Mac and not in this repo — see the P2-10 task note;
+     unverified in this session, needs a direct check on N100). -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hanyan.hcc-openclaw-sync</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/michael/workspace/projects/HCC/scripts/sync_openclaw_memory.py</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HCC_URL</key>
+        <string>http://localhost:8000</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/michael/.hcc/openclaw-sync/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/michael/.hcc/openclaw-sync/launchd.err.log</string>
+</dict>
+</plist>

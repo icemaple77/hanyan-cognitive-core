@@ -302,6 +302,7 @@ export default {
             id: it.memory.id,
             content: it.memory.content,
             summary: it.memory.summary,
+            source: it.memory.source,
             score: it.rrf_score,
             created_at: it.memory.created_at,
           }));

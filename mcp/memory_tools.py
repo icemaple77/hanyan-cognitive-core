@@ -57,6 +57,7 @@ def _serialize(memory: Memory) -> dict[str, Any]:
         "summary": memory.summary or "",
         "importance": memory.importance,
         "tags": list(memory.tags or []),
+        "source": memory.source,
         "status": memory.status,
         "access_count": memory.access_count,
         "created_at": _iso(memory.created_at),
@@ -156,7 +157,8 @@ async def recall(
                                          user_id=user_id, agent_id=agent_id)
             return _ok(results=[
                 {"content": r.content, "source": r.source, "score": r.score,
-                 "importance": r.importance, "memory_id": r.memory_id}
+                 "importance": r.importance, "memory_id": r.memory_id,
+                 "memory_source": r.memory_source, "created_at": r.created_at}
                 for r in results
             ])
     except Exception as exc:  # noqa: BLE001

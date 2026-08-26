@@ -8,6 +8,7 @@ from typing import Optional
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import core_settings
 from gateway.core.embeddings import embed_text
 from gateway.core.events import publish_conflict_event
 from gateway.core.fts import tokenize_for_fts
@@ -184,6 +185,34 @@ class MemoryService:
             )
         return stmt
 
+    @staticmethod
+    def _apply_recency_source_weighting(fused: list[dict]) -> None:
+        """Reweight RRF-fused results by memory age and source (P2-7), in place.
+
+        Multiplies each item's ``rrf_score`` by a recency-decay factor
+        (``0.5 ** (age_days / half_life)``, see ``retrieval_recency_half_life_days``)
+        and a per-``Memory.source`` weight (``retrieval_source_weights``), then
+        re-sorts. Multiplicative, not a replacement, so topical relevance from
+        BM25+vector stays the dominant signal — this only breaks ties/near-ties
+        in favor of newer, non-bulk-migrated memories.
+        """
+        if not fused:
+            return
+        if not core_settings.retrieval_recency_weighting_enabled and not core_settings.retrieval_source_weights:
+            return
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        half_life = core_settings.retrieval_recency_half_life_days
+        for item in fused:
+            memory = item["memory"]
+            weight = core_settings.retrieval_source_weights.get(memory.source, 1.0)
+            if core_settings.retrieval_recency_weighting_enabled and memory.created_at:
+                age_days = max(0.0, (now - memory.created_at).total_seconds() / 86400.0)
+                weight *= 0.5 ** (age_days / half_life)
+            item["rrf_score"] *= weight
+
+        fused.sort(key=lambda item: item["rrf_score"], reverse=True)
+
     async def semantic_search(
         self,
         embedding: list[float],
@@ -319,6 +348,7 @@ class MemoryService:
         fused = reciprocal_rank_fusion(bm25_results, vector_results)
         for item in fused:
             item["memory"] = item.pop("row")
+        self._apply_recency_source_weighting(fused)
         do_rerank = rerank and RERANK_ENABLED
         top = fused[: max(limit, candidate_pool) if do_rerank else limit]
 
