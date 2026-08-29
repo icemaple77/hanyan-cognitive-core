@@ -35,6 +35,16 @@ EMBEDDING_PROVIDER = os.getenv("HCC_EMBEDDING_PROVIDER", "hash")
 EMBEDDING_MODEL = os.getenv("HCC_EMBEDDING_MODEL", "BAAI/bge-m3")
 EMBEDDING_DIM = int(os.getenv("HCC_EMBEDDING_DIM", "1024"))
 OLLAMA_BASE_URL = os.getenv("HCC_OLLAMA_URL", "http://localhost:11434")
+# BGE-family models want an asymmetric query instruction prepended to *queries*
+# only (not to stored passages) for retrieval. Empty by default → no-op for
+# ollama/hash and for symmetric models. For bge-*-zh set it to
+# "为这个句子生成表示以用于检索相关文章：" in .env.
+EMBEDDING_QUERY_INSTRUCTION = os.getenv("HCC_EMBEDDING_QUERY_INSTRUCTION", "")
+# Pin sentence-transformers to CPU: the embedder sits on the memory hot path and
+# must run *concurrently* with the brain's Metal generation. On CPU it runs truly
+# parallel (no GPU contention → no repeat of the 2026-08 concurrent-Metal kernel
+# panic, no Broker serialization latency). A 102M model embeds in ~14ms on CPU.
+EMBEDDING_DEVICE = os.getenv("HCC_EMBEDDING_DEVICE", "cpu")
 
 _TOKEN_RE = re.compile(r"\w+")
 
@@ -42,12 +52,17 @@ _TOKEN_RE = re.compile(r"\w+")
 _model_cache: dict = {}
 
 
-def embed_text(text: str, dim: int = EMBEDDING_DIM) -> list[float]:
-    """Embed text using the configured provider."""
+def embed_text(text: str, dim: int = EMBEDDING_DIM, is_query: bool = False) -> list[float]:
+    """Embed text using the configured provider.
+
+    is_query: when True and a query instruction is configured, prepend it (BGE
+    asymmetric retrieval). Store-side callers leave it False; the query path in
+    hybrid_search passes True.
+    """
     if EMBEDDING_PROVIDER == "ollama":
         return _embed_ollama(text)
     elif EMBEDDING_PROVIDER == "sentence-transformers":
-        return _embed_sentence(text, dim)
+        return _embed_sentence(text, dim, is_query)
     else:
         return _embed_hash(text, dim)
 
@@ -96,12 +111,19 @@ def _embed_ollama(text: str) -> list[float]:
     return resp.json()["embedding"]
 
 
-def _embed_sentence(text: str, dim: int) -> list[float]:
-    """Embed using sentence-transformers with bge-m3."""
+def _embed_sentence(text: str, dim: int, is_query: bool = False) -> list[float]:
+    """Embed using sentence-transformers (CPU-resident; bge-base-zh by default).
+
+    The model loads once into _model_cache and stays resident in-process — the
+    gateway is always up, so the embedder is naturally always-resident. Pinned to
+    CPU (see EMBEDDING_DEVICE) to run parallel to Metal generation without contention.
+    """
     global _model_cache
     if "model" not in _model_cache:
         from sentence_transformers import SentenceTransformer
-        _model_cache["model"] = SentenceTransformer(EMBEDDING_MODEL)
+        _model_cache["model"] = SentenceTransformer(EMBEDDING_MODEL, device=EMBEDDING_DEVICE)
     model = _model_cache["model"]
+    if is_query and EMBEDDING_QUERY_INSTRUCTION:
+        text = EMBEDDING_QUERY_INSTRUCTION + text
     emb = model.encode(text, normalize_embeddings=True)
     return emb.tolist()

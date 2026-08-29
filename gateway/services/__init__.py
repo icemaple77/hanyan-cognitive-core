@@ -332,7 +332,7 @@ class MemoryService:
 
         if query and not embedding:
             try:
-                embedding = await asyncio.to_thread(embed_text, query)
+                embedding = await asyncio.to_thread(embed_text, query, is_query=True)
             except Exception:
                 logger.exception("embed_text failed for hybrid_search query — falling back to BM25-only")
 
