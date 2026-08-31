@@ -414,6 +414,10 @@ _STRUCTURAL_TRIGGERS: dict[str, dict[str, float]] = {
 
 _REDIS_KEY = "hcc:emotion:state:v2"
 
+# 神经更新的"显著度"门槛:soul 读数偏离该维 baseline 不到这个,就不算"这句话在动
+# 这一维"——不更新它,交给衰减自然回落。避免每句话把 17 维一起拉动、出不自洽的态。
+_NEURAL_SALIENCE_MIN = 0.12
+
 
 class EmotionEngine:
     """Dimensional + named-state emotion engine with decay and persistence.
@@ -711,13 +715,21 @@ class EmotionEngine:
 
         self._apply_decay()
         factor = 1.0 if importance is None else (0.5 + max(0.0, min(1.0, importance)))
-        triggered = [dim for dim, reading in offsets.items() if reading > 0.05]
         # soul 给的是本轮"情绪读数"(绝对值,恒正),不是增量——必须向读数靠拢(EWMA),
         # 不能累加,否则恒正读数每轮往上顶,全维必然饱和到 1.0(2026-08-31 修复)。
-        w = min(0.6, 0.35 * factor)  # 本轮把状态拉向读数的权重;有惯性,天然有界 [0,1]
+        # 且只动"显著维"(读数明显偏离 baseline 的),其余不碰、交给衰减,避免全维乱抖。
+        w_base = min(0.6, 0.35 * factor)
+        triggered: list[str] = []
         for dim, reading in offsets.items():
-            if dim in self._state:
-                self._state[dim] = max(0.0, min(1.0, (1.0 - w) * self._state[dim] + w * reading))
+            if dim not in self._state:
+                continue
+            base = self._baseline.get(dim, DEFAULT_STATE.get(dim, 0.0))
+            salience = abs(reading - base)
+            if salience < _NEURAL_SALIENCE_MIN:
+                continue  # 不显著:不更新,让 _apply_decay 把它带回 baseline
+            triggered.append(dim)
+            w = min(0.7, w_base * (0.5 + salience * 2.0))  # 越显著,拉向读数越狠
+            self._state[dim] = max(0.0, min(1.0, (1.0 - w) * self._state[dim] + w * reading))
 
         snapshot = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
