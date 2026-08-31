@@ -404,6 +404,21 @@ _REDIS_KEY = "hcc:emotion:state:v2"
 # 这一维"——不更新它,交给衰减自然回落。避免每句话把 17 维一起拉动、出不自洽的态。
 _NEURAL_SALIENCE_MIN = 0.12
 
+# 对立情绪对(a, b, 互抑强度 k):情绪不该"又哭又笑"——每次更新后让对立维互相抑制
+# (opponent-process),高的一方压低对立方。杜绝矛盾态(2026-08-31 ③)。
+_OPPONENTS: list[tuple[str, str, float]] = [
+    ("happiness", "sadness", 0.5),
+    ("happiness", "anger", 0.4),
+    ("happiness", "worry", 0.35),
+    ("playfulness", "sadness", 0.4),
+    ("playfulness", "loneliness", 0.35),
+    ("tenderness", "anger", 0.45),
+    ("closeness", "loneliness", 0.45),
+    ("focus", "anxiety", 0.35),
+    ("excitement", "sadness", 0.4),
+    ("curiosity", "fatigue", 0.3),
+]
+
 
 class EmotionEngine:
     """Dimensional + named-state emotion engine with decay and persistence.
@@ -449,6 +464,16 @@ class EmotionEngine:
             self._state[dim] += (target - self._state[dim]) * min(decay_rate, 0.5)
         self._last_update = now
 
+    def _enforce_coherence(self) -> None:
+        """对立情绪互相抑制(opponent-process),杜绝'又哭又笑'的矛盾态。
+        每次更新后调一次:高的一方按强度 k 压低对立方。用更新前快照算抑制量,
+        避免遍历顺序影响结果;多个对立方叠加抑制(又气又愁则喜悦压得更低)。"""
+        pre = dict(self._state)
+        for a, b, k in _OPPONENTS:
+            if a in self._state and b in self._state:
+                self._state[a] = max(0.0, self._state[a] - k * pre[b])
+                self._state[b] = max(0.0, self._state[b] - k * pre[a])
+
     def update(
         self,
         text: str,
@@ -481,6 +506,7 @@ class EmotionEngine:
             for dim, shift in shifts.items():
                 if dim in self._state:
                     self._state[dim] = max(0.0, min(1.0, self._state[dim] + shift * factor))
+        self._enforce_coherence()  # 对立情绪互抑,杜绝矛盾态
 
         snapshot = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -716,6 +742,7 @@ class EmotionEngine:
             triggered.append(dim)
             w = min(0.7, w_base * (0.5 + salience * 2.0))  # 越显著,拉向读数越狠
             self._state[dim] = max(0.0, min(1.0, (1.0 - w) * self._state[dim] + w * reading))
+        self._enforce_coherence()  # 对立情绪互抑,杜绝矛盾态
 
         snapshot = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
