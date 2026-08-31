@@ -327,61 +327,47 @@ _NAMED_STATE_PRIMARY_DIM: dict[str, str] = {
 }
 
 
-def compute_named_state(state: dict[str, float], settings: CoreSettings | None = None) -> str:
-    """Resolve the 6-dim state to one named composite state (2.2).
+# 维度 → 主命名态(按"高于 baseline 最多"的维取名)。worry 在函数里特判。
+_DIM_TO_NAMED: dict[str, str] = {
+    "closeness": NAMED_STATE_ATTACHMENT,
+    "happiness": NAMED_STATE_ELATED,
+    "focus": NAMED_STATE_FOCUSED,
+    "fatigue": NAMED_STATE_TIRED,
+    "curiosity": NAMED_STATE_CURIOUS,
+    "sadness": NAMED_STATE_LOW,
+    "anger": NAMED_STATE_WRONGED,
+    "jealousy": NAMED_STATE_JEALOUS,
+    "shyness": NAMED_STATE_SHY,
+    "tenderness": NAMED_STATE_TENDER,
+    "loneliness": NAMED_STATE_LONELY,
+    "playfulness": NAMED_STATE_PLAYFUL,
+    "anxiety": NAMED_STATE_ANXIOUS,
+    "excitement": NAMED_STATE_EXCITED,
+    "arousal": NAMED_STATE_AROUSED,
+    "ecstasy": NAMED_STATE_ECSTATIC,
+}
+_NAMED_SALIENCE_MIN = 0.10  # 最突出的维高于常态不到这个 → 平静(此刻无明显情绪)
 
-    Rules are evaluated most-specific-first (mirrors the stateDiagram in
-    docs/emotion-design.md); the first match wins, falling back to 平静.
+
+def compute_named_state(
+    state: dict[str, float],
+    settings: CoreSettings | None = None,
+    baseline: dict[str, float] | None = None,
+) -> str:
+    """按"相对 baseline 的偏离"命名此刻情绪(2026-08-31 重写)。
+
+    旧版用绝对阈值判定,但她 baseline 本身就高(好奇0.7/亲近0.5/喜悦0.6),
+    从常态就命中"依恋/好奇",命名态卡死。改为:此刻**高于常态最多**的维决定
+    名字;没有维明显高于常态 → 平静。这样命名态真正跟着"此刻比平时更突出什么"走。
     """
-    s = settings or core_settings
-
-    def g(key: str) -> float:
-        return float(state.get(key, DEFAULT_STATE.get(key, 0.5)))
-
-    if g("closeness") > s.emotion_attachment_closeness and g("happiness") > s.emotion_attachment_happiness:
-        return NAMED_STATE_ATTACHMENT
-    if (
-        g("happiness") > s.emotion_elated_happiness
-        and g("curiosity") > s.emotion_elated_curiosity
-        and g("fatigue") < s.emotion_elated_fatigue_max
-    ):
-        return NAMED_STATE_ELATED
-    if g("focus") > s.emotion_focused_focus and g("fatigue") < s.emotion_focused_fatigue_max:
-        return NAMED_STATE_FOCUSED
-    if g("fatigue") > s.emotion_tired_fatigue:
-        return NAMED_STATE_TIRED
-    if g("happiness") < s.emotion_low_happiness_max and g("worry") > s.emotion_low_worry:
-        return NAMED_STATE_LOW
-    if g("worry") > s.emotion_worried_worry:
-        return NAMED_STATE_WORRIED
-    if g("curiosity") > s.emotion_curious_curiosity and g("worry") < s.emotion_curious_worry_max:
-        return NAMED_STATE_CURIOUS
-
-    # New-dims cascade (soul v0.2) — checked after the original 8 states so a
-    # strong old-dim state (依恋/雀跃/专注/...) stays authoritative and a new
-    # dim only speaks up once nothing above already claimed this turn. Order
-    # mirrors soul_encoder's STATE_OVERRIDE_PRIORITY (most intense first).
-    if g("ecstasy") > s.emotion_ecstasy_ecstasy:
-        return NAMED_STATE_ECSTATIC
-    if g("arousal") > s.emotion_arousal_arousal:
-        return NAMED_STATE_AROUSED
-    if g("excitement") > s.emotion_excitement_excitement:
-        return NAMED_STATE_EXCITED
-    if g("anger") > s.emotion_anger_anger:
-        return NAMED_STATE_WRONGED
-    if g("jealousy") > s.emotion_jealousy_jealousy:
-        return NAMED_STATE_JEALOUS
-    if g("anxiety") > s.emotion_anxiety_anxiety:
-        return NAMED_STATE_ANXIOUS
-    if g("tenderness") > s.emotion_tenderness_tenderness:
-        return NAMED_STATE_TENDER
-    if g("loneliness") > s.emotion_loneliness_loneliness:
-        return NAMED_STATE_LONELY
-    if g("shyness") > s.emotion_shyness_shyness:
-        return NAMED_STATE_SHY
-    if g("playfulness") > s.emotion_playfulness_playfulness:
-        return NAMED_STATE_PLAYFUL
-    return NAMED_STATE_CALM
+    base = baseline or DEFAULT_STATE
+    devs = {d: state.get(d, 0.0) - base.get(d, DEFAULT_STATE.get(d, 0.0)) for d in DEFAULT_STATE}
+    dom = max(devs, key=devs.get)
+    if devs[dom] < _NAMED_SALIENCE_MIN:
+        return NAMED_STATE_CALM
+    if dom == "worry":  # 担忧维:喜悦也明显走低时读作"低落",否则"担忧"
+        return NAMED_STATE_LOW if devs.get("happiness", 0.0) < -_NAMED_SALIENCE_MIN else NAMED_STATE_WORRIED
+    return _DIM_TO_NAMED.get(dom, NAMED_STATE_CALM)
 
 
 def _named_state_intensity(named_state: str, state: dict[str, float]) -> float:
@@ -582,7 +568,7 @@ class EmotionEngine:
         """Get emotional summary for prompt injection (full mode, 2.2/2.4)."""
         s = self.state
         primary = max(s, key=s.get) if s else "neutral"
-        named = compute_named_state(s, self._settings)
+        named = compute_named_state(s, self._settings, self._baseline)
         meta = NAMED_STATE_META[named]
         return {
             "state": s,
@@ -602,7 +588,7 @@ class EmotionEngine:
         dimension model at all.
         """
         s = self.state
-        named = compute_named_state(s, self._settings)
+        named = compute_named_state(s, self._settings, self._baseline)
         meta = NAMED_STATE_META[named]
         return {
             "emotion": named,
