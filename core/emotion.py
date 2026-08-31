@@ -711,10 +711,13 @@ class EmotionEngine:
 
         self._apply_decay()
         factor = 1.0 if importance is None else (0.5 + max(0.0, min(1.0, importance)))
-        triggered = [dim for dim, shift in offsets.items() if shift > 0.05]
-        for dim, shift in offsets.items():
+        triggered = [dim for dim, reading in offsets.items() if reading > 0.05]
+        # soul 给的是本轮"情绪读数"(绝对值,恒正),不是增量——必须向读数靠拢(EWMA),
+        # 不能累加,否则恒正读数每轮往上顶,全维必然饱和到 1.0(2026-08-31 修复)。
+        w = min(0.6, 0.35 * factor)  # 本轮把状态拉向读数的权重;有惯性,天然有界 [0,1]
+        for dim, reading in offsets.items():
             if dim in self._state:
-                self._state[dim] = max(0.0, min(1.0, self._state[dim] + shift * factor))
+                self._state[dim] = max(0.0, min(1.0, (1.0 - w) * self._state[dim] + w * reading))
 
         snapshot = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
