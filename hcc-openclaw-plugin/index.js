@@ -323,7 +323,7 @@ async function fetchTurnContextBlock(baseUrl, { userId, agentId }, query, log) {
           parts.push(top.map(([k, v]) => k + '=' + (v > 0 ? "+" : "") + v.toFixed(2)).join(" "));
         }
         if (parts.length) {
-          text += (text ? "\n" : "") + "[soul 实时情绪] " + parts.join(" | ");
+          text += (text ? "\n" : "") + "[对这句话的即时感受] " + parts.join(" | ");
         }
       } catch (err) {
         log.error?.(`[hcc-memory] soul encode failed: ${err.message}`);

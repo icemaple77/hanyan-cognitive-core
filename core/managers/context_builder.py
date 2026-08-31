@@ -360,7 +360,7 @@ class ContextBuilder:
             )
             intensity = emotion_state.get("intensity")
             hint = emotion_state.get("expression_hint") or ""
-            head = f"- 此刻:{mood}" + (f"(强度 {intensity})" if intensity else "")
+            head = f"- 心情(持续):{mood}" + (f"(强度 {intensity})" if intensity else "")
             lines = ["## Emotional State", head]
             if hint:  # 关键:把"该怎么把情绪演出来"的行为指导也给她,情绪才真驱动表达
                 lines.append(f"- 表达倾向:{hint}")
