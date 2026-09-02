@@ -112,6 +112,30 @@ async def _periodic_sync_loop() -> None:
             logger.exception("periodic sync pass failed")
 
 
+async def _harvester_loop() -> None:
+    """每 HCC_HARVEST_INTERVAL 秒收割各 runtime 会话文件的新对话入库(过 4b 初筛)。
+
+    Agent 无感:纯读会话文件(openclaw/claude/…),不依赖任何插件钩子——这是公子
+    最早的设计(docs/03「拉取全部对话」),把 08-26 漂成插件打包的记忆链路拉回来。
+    见 core/session_harvester.py。异常吞掉保活。
+    """
+    import os as _os
+
+    from core.session_harvester import SessionHarvester
+
+    interval = int(_os.environ.get("HCC_HARVEST_INTERVAL", "60"))
+    harvester = SessionHarvester()
+    logger.info("session harvester started (interval=%ss)", interval)
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await harvester.harvest_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - keep the loop alive
+            logger.exception("session harvest pass failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -145,8 +169,19 @@ async def lifespan(app: FastAPI):
             core_settings.dream_deep_hour, core_settings.dream_deep_minute,
         )
 
+    harvest_task: asyncio.Task | None = None
+    import os as _os
+    if _os.environ.get("HCC_HARVESTER_ENABLED", "1") == "1":
+        harvest_task = asyncio.create_task(_harvester_loop())
+
     yield
     # Shutdown
+    if harvest_task is not None:
+        harvest_task.cancel()
+        try:
+            await harvest_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
     if sync_task is not None:
         sync_task.cancel()
         try:
