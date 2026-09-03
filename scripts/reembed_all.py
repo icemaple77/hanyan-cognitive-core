@@ -61,8 +61,11 @@ _VECTOR_TYPE_RE = re.compile(r"vector\((\d+)\)")
 # 新增带向量的表时,在这里加一行即可 —— 迁移逻辑不用改。
 TABLES: dict[str, dict] = {
     "memories": {
-        "select": "SELECT id, content, coalesce(summary,'') FROM memories WHERE status='active'",
-        "count": "SELECT count(*) FROM memories WHERE status='active'",
+        # 覆盖**所有状态**,不只 active:归档/丢弃的记忆构成遗忘 isolation 区,
+        # 按设计是要能被单独检索的——它们的向量若停在旧模型/旧约定,查出来就是
+        # 垃圾。一致性必须含归档区。(2026-09-03:首版漏了这点,3122 行差点被漏。)
+        "select": "SELECT id, content, coalesce(summary,'') FROM memories WHERE content IS NOT NULL",
+        "count": "SELECT count(*) FROM memories WHERE content IS NOT NULL",
         "text": lambda row: memory_embedding_text(row[1], row[2]),
     },
     "documents": {
@@ -71,6 +74,14 @@ TABLES: dict[str, dict] = {
         "text": lambda row: document_embedding_text(row[1], row[2]),
     },
 }
+
+# --stale-only 的过滤条件:只挑"不是当前模型算的"行(含从未标记的历史行)。
+_STALE_CLAUSE = "(embedding_model IS DISTINCT FROM :model)"
+
+
+def _with_stale(sql: str, stale_only: bool) -> str:
+    """给 select/count 语句追加 stale 过滤(它们都已带 WHERE)。"""
+    return f"{sql} AND {_STALE_CLAUSE}" if stale_only else sql
 
 
 async def _column_dim(conn, table: str) -> int | None:
@@ -89,15 +100,25 @@ def _vec_literal(vec: list[float]) -> str:
     return "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
 
 
-async def reembed_table(table: str, *, dry_run: bool, migrate_dim: bool, batch: int) -> None:
+async def reembed_table(table: str, *, dry_run: bool, migrate_dim: bool, batch: int,
+                        stale_only: bool = False) -> None:
     spec = TABLES[table]
     target_dim = core_settings.embedding_dim
+    params = {"model": EMBEDDING_MODEL}
 
     async with engine.begin() as conn:
         dim = await _column_dim(conn, table)
-        total = (await conn.execute(text(spec["count"]))).scalar() or 0
+        total = (await conn.execute(
+            text(_with_stale(spec["count"], stale_only)), params)).scalar() or 0
+        # 来源分布:一眼看出库里混着几个模型的向量(08-29 漏迁移那种事故的探照灯)
+        prov = list(await conn.execute(text(
+            f"SELECT coalesce(embedding_model,'(未标记)'), count(*) FROM {table} "
+            f"WHERE embedding IS NOT NULL GROUP BY 1 ORDER BY 2 DESC")))
 
-    print(f"\n[{table}] 列维度={dim} 目标维度={target_dim} 待重算={total} 行")
+    print(f"\n[{table}] 列维度={dim} 目标维度={target_dim} 待重算={total} 行"
+          + ("(仅 stale)" if stale_only else ""))
+    if prov:
+        print("  现有向量来源:", ", ".join(f"{m}×{n}" for m, n in prov))
     if dim is None:
         print(f"  跳过:{table} 没有 embedding 列")
         return
@@ -121,7 +142,7 @@ async def reembed_table(table: str, *, dry_run: bool, migrate_dim: bool, batch: 
         return
 
     async with engine.begin() as conn:
-        rows = list(await conn.execute(text(spec["select"])))
+        rows = list(await conn.execute(text(_with_stale(spec["select"], stale_only)), params))
 
     done = 0
     pending: list[tuple[str, str]] = []
@@ -142,7 +163,9 @@ async def _flush(table: str, pending: list[tuple[str, str]]) -> None:
     async with engine.begin() as conn:
         for rid, lit in pending:
             await conn.execute(
-                text(f"UPDATE {table} SET embedding = '{lit}'::vector WHERE id = :i"), {"i": rid})
+                text(f"UPDATE {table} SET embedding = '{lit}'::vector, "
+                     f"embedding_model = :m WHERE id = :i"),
+                {"i": rid, "m": EMBEDDING_MODEL})
 
 
 async def main() -> None:
@@ -152,12 +175,15 @@ async def main() -> None:
     ap.add_argument("--migrate-dim", action="store_true",
                     help="列维度与配置不符时改列型(会清空旧向量)")
     ap.add_argument("--batch", type=int, default=200, help="每批写回行数")
+    ap.add_argument("--stale-only", action="store_true",
+                    help="只重算不是当前模型算的行(换模型后增量补跑/断点续跑)")
     args = ap.parse_args()
 
     print(f"嵌入后端:{EMBEDDING_PROVIDER} / {EMBEDDING_MODEL} / {core_settings.embedding_dim} 维")
     targets = list(TABLES) if args.table == "all" else [args.table]
     for t in targets:
-        await reembed_table(t, dry_run=args.dry_run, migrate_dim=args.migrate_dim, batch=args.batch)
+        await reembed_table(t, dry_run=args.dry_run, migrate_dim=args.migrate_dim,
+                            batch=args.batch, stale_only=args.stale_only)
     await engine.dispose()
     print("\n完成。建议随后重启网关,并确认 /health 的 vector_dims.ok == true。")
 

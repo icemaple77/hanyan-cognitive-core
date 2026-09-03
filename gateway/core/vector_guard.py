@@ -71,14 +71,49 @@ async def check_vector_dims(conn, expected_dim: int) -> dict:
         if actual is not None and actual != expected_dim:
             mismatches.append(entry)
 
+    # 第二种失效模式:维度对、**向量空间不对**。08-29 换模型时手工重算按 content
+    # 单独嵌、线上写入按 content+summary 嵌,库里混了两套约定;更早还混过 nomic
+    # (也是 768 维!)。维度查不出这种事,只能看 embedding_model 来源标记。
+    # 先问清哪些表**有** embedding_model 列再查——不能靠 try/except 试探:在同一个
+    # 事务里,一条语句失败会让 Postgres 把整个事务置为 aborted,后续查询全部连坐,
+    # 而异常又被吞掉,结果就是静默返回空(本函数首版正是栽在这)。
+    has_col = {
+        r[0] for r in await conn.execute(text("""
+            SELECT table_name FROM information_schema.columns
+            WHERE table_schema = current_schema() AND column_name = 'embedding_model'
+        """))
+    }
+    provenance: dict[str, dict[str, int]] = {}
+    mixed: list[str] = []
+    for tbl in sorted({c["table"] for c in columns} & has_col):
+        rows = await conn.execute(text(
+            f"SELECT coalesce(embedding_model, '(未标记)'), count(*) FROM {tbl} "  # noqa: S608
+            "WHERE embedding IS NOT NULL GROUP BY 1"))
+        dist = {str(m): int(n) for m, n in rows}
+        if not dist:
+            continue
+        provenance[tbl] = dist
+        if len(dist) > 1:
+            mixed.append(tbl)
+
     report = {
         "checked": True,
-        "ok": not mismatches,
+        "ok": not mismatches and not mixed,
         "expected_dim": expected_dim,
         "columns": columns,
         "mismatches": mismatches,
+        "provenance": provenance,
+        "mixed_provenance": mixed,
     }
     _LAST_REPORT = report
+
+    if mixed:
+        logger.error(
+            "向量来源混杂!这些表里存着不止一个模型算出的向量:%s(分布 %s)。"
+            "维度相同不代表空间相同——跨空间的余弦距离是无意义的,检索会静默变差。"
+            "处置:python scripts/reembed_all.py --stale-only",
+            ", ".join(mixed), provenance,
+        )
 
     if mismatches:
         detail = ", ".join(f"{m['table']}.{m['column']}=vector({m['dim']})" for m in mismatches)

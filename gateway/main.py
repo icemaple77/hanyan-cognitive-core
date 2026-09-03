@@ -143,6 +143,14 @@ async def lifespan(app: FastAPI):
         # create_all 只建新表(priorities 走这)、不给已存在的表加列。tasks 表已存在,
         # 循环任务新增的 repeat 列必须显式补,否则 ORM 期待的列库里没有 → task_create 崩。
         await conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS repeat VARCHAR(64)"))
+        # 向量来源标记(2026-09-03):记下每条向量是哪个模型算的,换模型时
+        # "谁还没重算" 变成一条 SQL,而不是像 08-29 那样靠人肉记(结果漏了整张表)。
+        for _tbl in ("memories", "documents"):
+            await conn.execute(text(
+                f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(128)"))
+            await conn.execute(text(
+                f"CREATE INDEX IF NOT EXISTS ix_{_tbl}_embedding_model "
+                f"ON {_tbl} (embedding_model)"))
         # 向量维度自检:换模型漏迁移会让相关表的语义检索静默降级(2026-08-29 事故,
         # documents 死了 5 天没人知道)。不一致时大声报错并挂到 /health,但不拒绝
         # 启动——HCC 不能挂,宁可响铃也不停机。见 gateway/core/vector_guard.py。

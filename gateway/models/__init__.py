@@ -52,6 +52,10 @@ class Memory(Base):
     source = Column(String(64), default="api")
     status = Column(String(32), default=MemoryStatus.ACTIVE.value)
     embedding = Column(Vector(EMBEDDING_DIM), nullable=True)
+    # 这条向量是**哪个模型**算的(向量空间身份)。2026-08-29 换模型时靠人肉记
+    # "我是不是全跑了",结果漏了 documents 整张表、5 天没人知道。有了这一列,
+    # "还有哪些行没重算" 是一条 SQL 查得出来的事实,不是猜。见 scripts/reembed_all.py。
+    embedding_model = Column(String(128), nullable=True, index=True)
     # Pre-tokenized (jieba, see gateway.core.fts) blob of content+summary+tags,
     # kept in sync by the before_insert/before_update listeners below. Indexed
     # via a GIN expression index (to_tsvector('simple', search_text)) for BM25
@@ -105,6 +109,8 @@ class Document(Base):
     # sync by the before_insert/before_update listener below.
     search_text = Column(Text, default="", nullable=False, server_default="")
     embedding = Column(Vector(EMBEDDING_DIM), nullable=True)
+    # 同 Memory.embedding_model:向量空间身份,换模型时用来查"谁还没重算"。
+    embedding_model = Column(String(128), nullable=True, index=True)
     mtime = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
