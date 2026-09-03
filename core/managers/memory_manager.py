@@ -107,7 +107,7 @@ class MemoryManager:
             bus = await self._ensure_bus()
             if bus is not None:
                 await bus.publish_event(EventType.MEMORY_UPDATED, payload)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("Failed to publish MEMORY_UPDATED event", exc_info=True)
 
     # ------------------------------------------------------------------

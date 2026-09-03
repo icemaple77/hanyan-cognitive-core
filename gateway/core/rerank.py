@@ -30,13 +30,11 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 __all__ = ["RERANK_ENABLED", "is_available", "rerank"]
+from core.config import core_settings  # 单一配置源(2026-09-03)
 
-RERANK_ENABLED = os.getenv("HCC_RERANK_ENABLED", "false").lower() in ("1", "true", "yes")
-RERANK_MODEL_PATH = os.getenv(
-    "HCC_RERANK_MODEL_PATH",
-    os.path.expanduser("~/.cache/qmd/models/hf_ggml-org_qwen3-reranker-0.6b-q8_0.gguf"),
-)
-RERANK_N_CTX = int(os.getenv("HCC_RERANK_N_CTX", "2048"))
+RERANK_ENABLED = core_settings.rerank_enabled
+RERANK_MODEL_PATH = str(core_settings.rerank_model_path)
+RERANK_N_CTX = core_settings.rerank_n_ctx
 
 _llm_cache: dict = {}
 _load_lock = asyncio.Lock()
@@ -102,6 +100,6 @@ async def rerank(query: str, documents: list[str]) -> Optional[list[float]]:
     async with _load_lock:
         try:
             return await asyncio.to_thread(_score_all_sync, query, documents)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("rerank scoring failed, falling back to RRF-only ranking", exc_info=True)
             return None

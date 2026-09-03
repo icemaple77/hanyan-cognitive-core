@@ -25,10 +25,13 @@ so :meth:`build` accepts an injected ``emotion_provider`` callable and returns
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-from typing import Any, Awaitable, Callable
+from typing import Any
+from collections.abc import Awaitable, Callable
 
+from core.config import core_settings
 from core.managers.knowledge_manager import KnowledgeManager
 from core.managers.memory_manager import MemoryManager
 from core.providers.base import SearchQuery
@@ -237,11 +240,23 @@ class ContextBuilder:
             ),
         }
 
+        # 价值坐标(读路 join,§五):公子的 registry,读时现算——保送席 + 锚词加成。
+        # 绝不改 memories;取不到就退化成纯相关性(不挡注入)。
+        priorities: list[dict[str, Any]] = []
+        try:
+            from gateway.core.database import async_session
+            from gateway.services.priority_service import PriorityService
+            async with async_session() as psession:
+                priorities = await PriorityService(psession).active_for_read(user_id=user_id)
+        except Exception:
+            logger.warning("priority fetch failed; injection falls back to relevance-only", exc_info=True)
+
         context_text = self._render_context(
             memory_items=memory_items,
             knowledge_items=knowledge_result.items,
             emotion_state=emotion_state,
             memory_limit=limit,
+            priorities=priorities,
         )
 
         return {
@@ -263,7 +278,7 @@ class ContextBuilder:
         """
         try:
             aliases = core_settings.identity_aliases.get(user_id, [])
-        except Exception:  # noqa: BLE001 — never let config shape break retrieval
+        except Exception:
             aliases = []
         ordered = [user_id, *(a for a in aliases if a != user_id)]
         seen: set[str] = set()
@@ -308,7 +323,7 @@ class ContextBuilder:
             if hasattr(result, "__await__"):
                 result = await result  # type: ignore[assignment]
             return result  # type: ignore[return-value]
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("Emotion provider failed", exc_info=True)
             return None
 
@@ -319,25 +334,95 @@ class ContextBuilder:
         knowledge_items: list[dict[str, Any]],
         emotion_state: dict[str, Any] | None,
         memory_limit: int = 10,
+        priorities: list[dict[str, Any]] | None = None,
     ) -> str:
-        """Render the retrieved items into a readable context block."""
+        """Render the retrieved items into a readable context block.
+
+        ``priorities`` 是 Priority Compass 读路 join 用的价值坐标(active、α>0),
+        每条带 ``anchors`` / ``quadrant`` / ``alpha``。用法(§五 + Claude Code 会诊):
+        - **保送席**:Q1 主题命中的记忆,在头部占至多 3 席,不参与相关性内卷、也
+          绕开碎片配额;但**相关性地板 = 必须在检索池里**——池里没有就空着,绝不硬凑。
+        - 其余按"蒸馏优先 + 碎片限 1/3"分层(见下)。
+        """
         blocks: list[str] = []
+        priorities = priorities or []
 
         headlines: list[str] = []
         seen: set[str] = set()
-        for item in memory_items:
+
+        def _dedup_key(h: str) -> str:
+            # 同指纹/同 summary 前 80 字视作同一条:尾部微异的重复只留一条(公子 09-03)。
+            return h.casefold().strip()[:80]
+
+        def _add(item: dict[str, Any]) -> bool:
+            """取干净 headline、去重后加入注入;成功返回 True。"""
             headline = _headline(item)
             if headline is None:
-                continue
-            # Drop near-identical bullets (case/space-insensitive) — the same
-            # digest is often stored several times with trivial variation.
-            key = headline.casefold().strip()
+                return False
+            key = _dedup_key(headline)
             if key in seen:
-                continue
+                return False
             seen.add(key)
             headlines.append(headline)
+            return True
+
+        # Q1(重要且紧急)主题锚词:保送席按这些命中拉人。
+        q1_anchors = [
+            str(a).casefold()
+            for p in priorities if p.get("quadrant") == "Q1"
+            for a in (p.get("anchors") or []) if str(a).strip()
+        ]
+
+        def _hits(item: dict[str, Any], anchors_lower: list[str]) -> bool:
+            if not anchors_lower:
+                return False
+            hay = " ".join([
+                str(item.get("summary") or ""),
+                str(item.get("content") or ""),
+                " ".join(item["tags"]) if isinstance(item.get("tags"), list) else str(item.get("tags") or ""),
+            ]).casefold()
+            return any(a in hay for a in anchors_lower)
+
+        # 第 0 层 · 保送席:Q1 主题命中的记忆占头部至多 3 席(池里有才占,没有则空)。
+        # 保送席绕开碎片配额——养伤这种 Q1 事,哪怕库里只有对话碎片,也该顶上来。
+        reserved = 0
+        RESERVED_CAP = 3
+        if q1_anchors:
+            for item in memory_items:
+                if reserved >= RESERVED_CAP or len(headlines) >= memory_limit:
+                    break
+                if _hits(item, q1_anchors) and _add(item):
+                    reserved += 1
+
+        # 注入配额分层(公子 09-03 令:注入要干净、要分层):
+        #   蒸馏记忆(有 summary 的 knowledge/decision 等)先占剩余预算;harvester 原始
+        #   对话碎片降权限量——最多占 1/3,且排在蒸馏之后。碎片截半句、上下文全丢,能命中
+        #   却没信息量,该在 memory_search 深挖时出场,不该霸占每轮系统注入位。
+        distilled: list[dict[str, Any]] = []
+        fragments_src: list[dict[str, Any]] = []
+        for item in memory_items:
+            if str(item.get("source") or "").startswith("harvester"):
+                fragments_src.append(item)
+            else:
+                distilled.append(item)
+
+        # 第一层:蒸馏记忆优先占位。
+        for item in distilled:
             if len(headlines) >= memory_limit:
                 break
+            _add(item)
+
+        # 第二层:harvester 碎片补位(仅当蒸馏填不满时兜底)。默认配额 0 ——
+        # 收割来的原始对话是"深挖检索池",不是每轮系统注入的候选(公子 09-03:该在
+        # memory_search 深挖时出场,不霸占每轮注入位)。保送席是唯一例外,不受此限。
+        # 手感太薄可设 HCC_INJECT_FRAGMENT_CAP=3 放宽。
+        fragment_cap = core_settings.inject_fragment_cap
+        fragments = 0
+        for item in fragments_src:
+            if len(headlines) >= memory_limit or fragments >= fragment_cap:
+                break
+            if _add(item):
+                fragments += 1
 
         if headlines:
             lines = ["## Relevant Memories"]
@@ -346,10 +431,21 @@ class ContextBuilder:
 
         if knowledge_items:
             lines = ["## Knowledge"]
+            # 同一事实常被 qmd 切成多块/多篇重复记录 → 渲染层按指纹去重+限量(公子 09-03:BEES×5 病灶)
+            kseen: set[str] = set()
             for item in knowledge_items:
                 heading = (item.get("heading") or item.get("id") or "").strip()
+                if not heading:
+                    continue
+                kkey = heading.casefold().strip()[:80]
+                if kkey in kseen:
+                    continue
+                kseen.add(kkey)
                 lines.append(f"- {heading}".rstrip())
-            blocks.append("\n".join(lines))
+                if len(kseen) >= 10:
+                    break
+            if len(lines) > 1:
+                blocks.append("\n".join(lines))
 
         if emotion_state:
             mood = (
@@ -358,7 +454,13 @@ class ContextBuilder:
                 or emotion_state.get("primary_emotion")
                 or ""
             )
-            blocks.append(f"## Emotional State\n- {mood}".rstrip())
+            intensity = emotion_state.get("intensity")
+            hint = emotion_state.get("expression_hint") or ""
+            head = f"- 心情(持续):{mood}" + (f"(强度 {intensity})" if intensity else "")
+            lines = ["## Emotional State", head]
+            if hint:  # 关键:把"该怎么把情绪演出来"的行为指导也给她,情绪才真驱动表达
+                lines.append(f"- 表达倾向:{hint}")
+            blocks.append("\n".join(lines).rstrip())
 
         return "\n\n".join(blocks)
 

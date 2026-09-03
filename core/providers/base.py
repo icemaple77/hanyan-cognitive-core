@@ -42,6 +42,14 @@ class SearchQuery:
         filter" (list-style browsing).
     user_id:
         Optional owner filter. ``None`` searches across all users.
+    agent_id:
+        Optional agent-scope filter. ``None`` searches across all agents —
+        which is what the cross-agent identity merge in
+        :class:`ContextBuilder` deliberately wants (含烟's memories live under
+        several agent_ids: hanyan, openclaw, hermes). Set it only when a
+        caller genuinely wants a single agent's memories. Before P1-3 this
+        field did not exist, so the SDK search path *could not* express an
+        agent filter at all even when one was wanted.
     type:
         Optional category/type filter (e.g. ``"person"``, ``"project"``).
     limit:
@@ -52,6 +60,7 @@ class SearchQuery:
 
     query: str = ""
     user_id: str | None = None
+    agent_id: str | None = None
     type: str | None = None
     limit: int = 20
     offset: int = 0
@@ -87,6 +96,7 @@ class StoreData:
 
     content: str
     user_id: str
+    agent_id: str = "default"
     type: str = "general"
     summary: str = ""
     importance: float = 0.5

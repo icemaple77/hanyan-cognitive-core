@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.fts import tokenize_for_fts
 from gateway.core.rerank import RERANK_ENABLED, rerank as rerank_fn
+from gateway.core.embeddings import EMBEDDING_MODEL
 from gateway.core.rrf import reciprocal_rank_fusion
 from gateway.models import Document
 
@@ -99,6 +100,9 @@ class DocumentService:
                 content_hash=content_hash,
                 mtime=mtime,
                 embedding=embedding,
+                # 向量随身带上产出它的模型 —— 换模型时"谁还没重算"才是一条 SQL
+                # 而不是靠人肉记(2026-08-29 漏迁移事故的防线)。
+                embedding_model=EMBEDDING_MODEL if embedding is not None else None,
             )
             self.session.add(doc)
         else:
@@ -109,6 +113,7 @@ class DocumentService:
             doc.mtime = mtime
             if embedding is not None:
                 doc.embedding = embedding
+                doc.embedding_model = EMBEDDING_MODEL
 
         await self.session.flush()
         return doc, True
@@ -131,6 +136,7 @@ class DocumentService:
         query: str,
         limit: int = 20,
         collection: Optional[str] = None,
+        path_prefix: Optional[str] = None,
     ) -> list[tuple[Document, float]]:
         """BM25-style full-text search via Postgres ``ts_rank_cd``.
 
@@ -141,13 +147,19 @@ class DocumentService:
         if not tokens:
             return []
 
-        tsvector_expr = func.to_tsvector("simple", Document.search_text)
+        # 用存好的生成列而不是现算 to_tsvector(search_text):后者会让 PG 为每个命中
+        # 行重新解析全文,ORDER BY rank 更逼它对所有命中行都算——实测 891ms → 0.588ms。
+        tsvector_expr = Document.search_tsv
         tsquery_expr = func.plainto_tsquery("simple", tokens)
         rank = func.ts_rank_cd(tsvector_expr, tsquery_expr).label("rank")
 
         stmt = select(Document, rank).where(tsvector_expr.op("@@")(tsquery_expr))
         if collection:
             stmt = stmt.where(Document.collection == collection)
+        if path_prefix:
+            # 子树过滤:知识检索只看 Knowledge/ 那棵树,不必为它单开一个
+            # collection(会与 aicore 全量扫描重复索引同一批文件)。
+            stmt = stmt.where(Document.path.startswith(path_prefix))
         stmt = stmt.order_by(rank.desc()).limit(limit)
 
         result = await self.session.execute(stmt)
@@ -158,6 +170,7 @@ class DocumentService:
         embedding: list[float],
         limit: int = 10,
         collection: Optional[str] = None,
+        path_prefix: Optional[str] = None,
     ) -> list[tuple[Document, float]]:
         """Return the ``limit`` documents most similar to ``embedding`` (cosine)."""
         distance = Document.embedding.cosine_distance(embedding).label("distance")
@@ -165,6 +178,8 @@ class DocumentService:
         stmt = select(Document, distance).where(Document.embedding.is_not(None))
         if collection:
             stmt = stmt.where(Document.collection == collection)
+        if path_prefix:
+            stmt = stmt.where(Document.path.startswith(path_prefix))
         stmt = stmt.order_by(distance).limit(limit)
 
         result = await self.session.execute(stmt)
@@ -176,6 +191,7 @@ class DocumentService:
         embedding: Optional[list[float]] = None,
         limit: int = 10,
         collection: Optional[str] = None,
+        path_prefix: Optional[str] = None,
         candidate_pool: int = 50,
         rerank: bool = False,
         snippet_length: int = SNIPPET_DEFAULT_LEN,
@@ -192,9 +208,11 @@ class DocumentService:
         vector_results: list[tuple[Document, float]] = []
 
         if query:
-            bm25_results = await self.keyword_search_bm25(query, limit=candidate_pool, collection=collection)
+            bm25_results = await self.keyword_search_bm25(
+                query, limit=candidate_pool, collection=collection, path_prefix=path_prefix)
         if embedding:
-            vector_results = await self.semantic_search(embedding, limit=candidate_pool, collection=collection)
+            vector_results = await self.semantic_search(
+                embedding, limit=candidate_pool, collection=collection, path_prefix=path_prefix)
 
         fused = reciprocal_rank_fusion(bm25_results, vector_results)
         for item in fused:

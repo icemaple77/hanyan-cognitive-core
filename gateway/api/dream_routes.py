@@ -31,7 +31,7 @@ async def trigger_light(data: DreamTriggerRequest | None = None) -> dict:
     data = data or DreamTriggerRequest()
     try:
         return await get_dream_engine().run_light(force=data.force)
-    except Exception as exc:  # noqa: BLE001 - report to caller
+    except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -40,7 +40,7 @@ async def trigger_rem(data: DreamTriggerRequest | None = None) -> dict:
     data = data or DreamTriggerRequest()
     try:
         return await get_dream_engine().run_rem(force=data.force)
-    except Exception as exc:  # noqa: BLE001 - report to caller
+    except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -49,7 +49,7 @@ async def trigger_deep(data: DreamTriggerRequest | None = None) -> dict:
     data = data or DreamTriggerRequest()
     try:
         return await get_dream_engine().run_deep(force=data.force)
-    except Exception as exc:  # noqa: BLE001 - report to caller
+    except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

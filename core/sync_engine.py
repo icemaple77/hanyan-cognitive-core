@@ -36,10 +36,10 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+from collections.abc import Iterable
 
 import yaml
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from core.config import CoreSettings, core_settings
@@ -481,7 +481,7 @@ class SyncEngine:
                 {"id": memory_id, "origin": "sync_from_qmd"},
                 source="sync_engine",
             )
-        except Exception:  # noqa: BLE001 - never let event publishing break sync
+        except Exception:
             logger.exception("failed to publish MemoryUpdated for %s", memory_id)
 
     # ------------------------------------------------------------------
@@ -546,7 +546,7 @@ class SyncEngine:
         while True:
             try:
                 await self.sync_once()
-            except Exception:  # noqa: BLE001 - keep the loop alive
+            except Exception:
                 logger.exception("sync pass failed")
             await asyncio.sleep(wait)
 
@@ -632,12 +632,6 @@ def main() -> None:
     asyncio.run(_amain())
 
 
-if __name__ == "__main__":
-    import sys
-    if "--watch" in sys.argv:
-        watch_qmd()
-    else:
-        main()
 
 
 def watch_qmd(callback: callable | None = None) -> None:
@@ -705,3 +699,11 @@ async def _sync_single_file(filepath: str) -> None:
         memory.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await session.commit()
         print(f"[watch] synced {doc.memory_id} from {path.name}: {sorted(changes)}")
+
+
+if __name__ == "__main__":
+    import sys
+    if "--watch" in sys.argv:
+        watch_qmd()
+    else:
+        main()

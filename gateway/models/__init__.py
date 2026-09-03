@@ -4,15 +4,20 @@ import uuid
 from datetime import datetime, timezone
 from enum import StrEnum
 
-from sqlalchemy import Column, String, Float, Date, DateTime, Text, JSON, Boolean, Integer, Index, UniqueConstraint, CheckConstraint, event, text
+from sqlalchemy import Column, String, Float, Date, DateTime, Text, JSON, Boolean, Integer, Index, UniqueConstraint, CheckConstraint, Computed, event, text
 from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects.postgresql import TSVECTOR
 
 from gateway.core.database import Base
 from gateway.core.fts import build_search_text, tokenize_for_fts
 
-# Dimensionality of the stored embeddings. Keep in sync with HCC_EMBEDDING_DIM
-# (gateway.core.embeddings) and whatever HCC_EMBEDDING_MODEL actually produces.
-EMBEDDING_DIM = 1024  # qwen3-embedding:0.6b 原生维度(2026-08 从 nomic-embed-text/768 迁移,见 memories/documents 列迁移记录)
+# 建表用的向量维度 —— **从单一配置源读,禁止在此硬编码**。
+# 2026-09-03 事故:这里曾硬编码 1024 而运行时实际产出 768(.env),导致 documents
+# 列 1024/查询 768,语义检索每次报 "different vector dimensions"、知识召回静默
+# 降级成纯 BM25。建表维度与产出维度自此共用 core_settings.embedding_dim。
+from core.config import core_settings
+
+EMBEDDING_DIM = core_settings.embedding_dim
 
 
 class MemoryStatus(StrEnum):
@@ -48,12 +53,22 @@ class Memory(Base):
     source = Column(String(64), default="api")
     status = Column(String(32), default=MemoryStatus.ACTIVE.value)
     embedding = Column(Vector(EMBEDDING_DIM), nullable=True)
+    # 这条向量是**哪个模型**算的(向量空间身份)。2026-08-29 换模型时靠人肉记
+    # "我是不是全跑了",结果漏了 documents 整张表、5 天没人知道。有了这一列,
+    # "还有哪些行没重算" 是一条 SQL 查得出来的事实,不是猜。见 scripts/reembed_all.py。
+    embedding_model = Column(String(128), nullable=True, index=True)
     # Pre-tokenized (jieba, see gateway.core.fts) blob of content+summary+tags,
     # kept in sync by the before_insert/before_update listeners below. Indexed
     # via a GIN expression index (to_tsvector('simple', search_text)) for BM25
     # ranking — 'simple' just lowercases/splits, all the real CJK segmentation
     # already happened in Python so both index and query tokenize identically.
     search_text = Column(Text, default="", nullable=False, server_default="")
+    # BM25 排序用的 tsvector。与 Document.search_tsv 同理(ts_rank_cd 若现算
+    # to_tsvector 会为每个命中行重解析全文:实测 507ms → 用本列 11.8ms,43x)。
+    # 这里用**触发器**维护而非 PG 生成列:memories 已有 11.7 万行/149MB,改成生成列
+    # 要重写整表并长时间锁读写;触发器同样是数据库侧保证、永不与 search_text 失同步,
+    # 却只需瞬时加列。见 lifespan 里的 trg_memories_search_tsv。
+    search_tsv = Column(TSVECTOR, nullable=True)
     access_count = Column(Integer, default=0, nullable=False)
     last_access = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
@@ -101,6 +116,19 @@ class Document(Base):
     # sync by the before_insert/before_update listener below.
     search_text = Column(Text, default="", nullable=False, server_default="")
     embedding = Column(Vector(EMBEDDING_DIM), nullable=True)
+    # 同 Memory.embedding_model:向量空间身份,换模型时用来查"谁还没重算"。
+    embedding_model = Column(String(128), nullable=True, index=True)
+    # BM25 排序用的 tsvector。**PG 生成列**(GENERATED ALWAYS ... STORED),由数据库
+    # 自动维护、永不与 search_text 失同步。存它的理由:ts_rank_cd 若直接写
+    # to_tsvector(search_text),PG 会为每个命中行重新解析全文,且 ORDER BY rank 逼它
+    # 对所有命中行都算一遍——实测同一查询 891ms;改用存好的列后 0.588ms(1500×)。
+    # 用 Computed 声明:SQLAlchemy 据此知道**绝不能** insert/update 这一列
+    # (写生成列会被 PG 直接拒绝),同时 create_all 建新库时会自动带上生成表达式。
+    search_tsv = Column(
+        TSVECTOR,
+        Computed("to_tsvector('simple', search_text)", persisted=True),
+        nullable=True,
+    )
     mtime = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
@@ -207,3 +235,167 @@ class DreamRun(Base):
     finished_at = Column(DateTime, nullable=True)
     stats = Column(JSON, nullable=False, default=dict)
     narrative_path = Column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Task-Schedule — agent long-task anti-stall (看板卡 t_6b29b140)
+# ---------------------------------------------------------------------------
+# Purpose: hermes/openclaw stall on long tasks — they do one step then yield to
+# idle and wait. Claude Code doesn't, because its harness re-invokes the model
+# after every tool result and it keeps a live TODO list. This pair of tables
+# externalises that so a *fresh, zero-memory* woken session can resume a long
+# task exactly where it left off:
+#   - Task/TaskStep = the persistent TODO (survives compaction/session swap —
+#     the thing an in-context TodoWrite list cannot),
+#   - next_wake_at  = when an external cron should re-invoke the agent (the
+#     substitute for the harness's automatic per-tool-result re-invocation),
+#   - TaskStep.verify_cmd = how the woken session re-derives real progress from
+#     the world (deterministic), since it has no memory of the prior run and
+#     self-reported progress is untrustworthy.
+# The runtime-specific glue (one recurring cron per agent that polls
+# /tasks/due and spawns a session with the wake payload) lives outside HCC.
+
+
+class TaskStatus(StrEnum):
+    """Lifecycle of a whole :class:`Task`."""
+
+    PENDING = "pending"      # registered, no step started yet
+    RUNNING = "running"      # a step is in progress / being heartbeat-driven
+    BLOCKED = "blocked"      # a step exceeded max attempts OR hit a redline — needs human
+    DONE = "done"            # all steps verified complete
+    FAILED = "failed"        # abandoned / unrecoverable
+    CANCELLED = "cancelled"  # explicitly cancelled by owner
+
+
+class StepStatus(StrEnum):
+    """Lifecycle of a single :class:`TaskStep`."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class Task(Base):
+    """One long-running agent task, decomposed into ordered steps.
+
+    ``current_step`` is the 0-based index into the task's steps that the
+    heartbeat is currently driving. ``next_wake_at`` is when the external cron
+    should next re-invoke the owning agent to push this task forward; a NULL
+    means "not currently scheduled" (terminal, or awaiting first start).
+    """
+
+    __tablename__ = "tasks"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(128), index=True, nullable=False)
+    agent_id = Column(String(64), index=True, default="default", nullable=False)
+    title = Column(Text, nullable=False)
+    goal = Column(Text, default="")           # the overall objective, injected into every wake
+    status = Column(String(16), default=TaskStatus.PENDING.value, index=True)
+    current_step = Column(Integer, default=0, nullable=False)
+    # Extra redline keywords for THIS task, on top of the global redline list
+    # (delete / spend money / external send / family domain). A step whose
+    # instruction matches a redline blocks the task for human decision instead
+    # of auto-advancing.
+    redline_tags = Column(JSON, default=list)
+    attempts_on_current = Column(Integer, default=0, nullable=False)  # denormalised for quick due-scan
+    last_heartbeat = Column(DateTime, nullable=True)
+    next_wake_at = Column(DateTime, nullable=True, index=True)        # cron scans WHERE next_wake_at <= now
+    note = Column(Text, default="")           # last progress note / block reason
+    # 循环任务(公子 09-03:「循环定时任务也是任务」)。非空则任务永不终态 DONE:
+    # 全步验完后重置回第 0 步、status=running、next_wake_at 推到下次触发时刻。
+    # 复用整套机制(租约/退避/红线/attempt 上限),不新起调度系统。格式见
+    # task_service._next_fire:"every:<N>{s|m|h|d}" | "daily:HH:MM" | 纯秒数。
+    repeat = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','running','blocked','done','failed','cancelled')",
+            name="ck_tasks_status",
+        ),
+    )
+
+
+class TaskStep(Base):
+    """One ordered step of a :class:`Task`.
+
+    ``verify_cmd`` is the deterministic progress probe the woken agent runs in
+    its OWN environment (the logs/artifacts may live on another machine than
+    HCC) — e.g. ``tail -50 ~/train.log | grep -c 'epoch 100'``. ``est_seconds``
+    drives the next wake interval; ``actual_seconds`` is filled on completion to
+    feed future calibration. ``attempts`` counts heartbeats that found the step
+    still unfinished.
+    """
+
+    __tablename__ = "task_steps"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id = Column(String(36), index=True, nullable=False)
+    idx = Column(Integer, nullable=False)         # 0-based order within the task
+    title = Column(Text, nullable=False)
+    instruction = Column(Text, default="")        # what the agent should DO this step
+    verify_cmd = Column(Text, default="")         # deterministic "is it done?" probe (shell)
+    est_seconds = Column(Integer, default=600, nullable=False)
+    actual_seconds = Column(Integer, nullable=True)
+    attempts = Column(Integer, default=0, nullable=False)
+    status = Column(String(16), default=StepStatus.PENDING.value)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "idx", name="uq_task_steps_task_idx"),
+        Index("ix_task_steps_task_id_idx", "task_id", "idx"),
+    )
+
+
+class PriorityStatus(StrEnum):
+    """Lifecycle of a :class:`Priority` row (never physically deleted)."""
+
+    ACTIVE = "active"           # 当前生效
+    SUPERSEDED = "superseded"   # 被新版本取代(superseded_by 指向新行)
+    EXPIRED = "expired"         # review_at 过期且已降级归档
+
+
+class PriorityTrust(StrEnum):
+    """信任级别 —— 门槛 B(隔离生效):pending 先半权重,公子确认后转正全权重。"""
+
+    CONFIRMED = "confirmed"     # 公子显式确认 → 全权重
+    PENDING = "pending"         # agent 提案 → 确认前半权重(压不动紧急、也不污染全局)
+
+
+class Priority(Base):
+    """公子的『价值坐标』:一条"现在什么重要/急"的一等公民条目(跨运行时共享)。
+
+    设计见 docs/priority-compass-design.md。核心铁律:**价值读时算,绝不落进
+    memories.importance**。每条记忆的有效重要性 = 记忆 × 本表 的 join,在
+    context_builder 读路现算;改一行本表 → 全库权重瞬间刷新,无回刷、无重判。
+
+    象限(不落列,读时派生):imp≥4∧urg≥4→Q1;imp≥4→Q2;urg≥4→Q3;else Q4。
+    """
+
+    __tablename__ = "priorities"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(128), index=True, nullable=False, default="michael")
+    label = Column(Text, nullable=False)                       # 「肩颈损伤恢复」
+    anchors = Column(JSON, default=list)                       # 主题锚词(加速 join,读路用)
+    importance = Column(Integer, default=3, nullable=False)    # 1-5
+    urgency = Column(Integer, default=3, nullable=False)       # 1-5
+    source = Column(String(64), default="gongzi")              # gongzi | agent:<name>
+    trust = Column(String(16), default=PriorityTrust.CONFIRMED.value)
+    status = Column(String(16), default=PriorityStatus.ACTIVE.value, index=True)
+    review_at = Column(Date, nullable=True)                    # 复核日:过期 7 天未复核 → α 减半
+    superseded_by = Column(String(36), nullable=True)          # 版本链,永不物删
+    embedding = Column(Vector(EMBEDDING_DIM), nullable=True)   # label 向量(预留 emb join)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    __table_args__ = (
+        CheckConstraint("importance BETWEEN 1 AND 5", name="ck_priorities_importance"),
+        CheckConstraint("urgency BETWEEN 1 AND 5", name="ck_priorities_urgency"),
+        CheckConstraint("status IN ('active','superseded','expired')", name="ck_priorities_status"),
+        CheckConstraint("trust IN ('confirmed','pending')", name="ck_priorities_trust"),
+    )

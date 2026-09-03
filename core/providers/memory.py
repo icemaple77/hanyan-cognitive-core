@@ -39,7 +39,7 @@ from core.providers.base import (
     UpdateData,
 )
 from gateway.core.database import async_session
-from gateway.core.embeddings import embed_text
+from gateway.core.embeddings import EMBEDDING_MODEL, embed_text, memory_embedding_text
 from gateway.models import Memory, MemoryStatus
 from gateway.services import MemoryService
 
@@ -66,6 +66,7 @@ def _memory_to_dict(memory: Memory) -> dict[str, Any]:
     return {
         "id": memory.id,
         "user_id": memory.user_id,
+        "agent_id": memory.agent_id,
         "type": memory.type,
         "content": memory.content,
         "summary": memory.summary,
@@ -73,6 +74,9 @@ def _memory_to_dict(memory: Memory) -> dict[str, Any]:
         "tags": list(memory.tags or []),
         "source": memory.source,
         "status": memory.status,
+        "access_count": memory.access_count,  # P2-7: was missing here while the
+        # MCP _serialize path exposed it — two read paths returned different field
+        # sets for the same row. Aligned so SDK callers see access_count too.
         "created_at": memory.created_at.isoformat() if memory.created_at else None,
         "updated_at": memory.updated_at.isoformat() if memory.updated_at else None,
     }
@@ -130,6 +134,7 @@ class MemoryProvider(Provider):
                     query=query.query,
                     limit=query.limit,
                     user_id=query.user_id,
+                    agent_id=query.agent_id,
                     type=query.type,
                 )
                 items = [_memory_to_dict(item["memory"]) for item in fused]
@@ -145,6 +150,9 @@ class MemoryProvider(Provider):
             if query.user_id:
                 stmt = stmt.where(Memory.user_id == query.user_id)
                 count_stmt = count_stmt.where(Memory.user_id == query.user_id)
+            if query.agent_id:
+                stmt = stmt.where(Memory.agent_id == query.agent_id)
+                count_stmt = count_stmt.where(Memory.agent_id == query.agent_id)
             if query.type:
                 stmt = stmt.where(Memory.type == query.type)
                 count_stmt = count_stmt.where(Memory.type == query.type)
@@ -180,7 +188,8 @@ class MemoryProvider(Provider):
         failure (rather than poisoning the column with a hash vector), this
         guard is what stops that from hard-failing the store.
         """
-        text = f"{data.content}\n{data.summary or ''}".strip()
+        text = memory_embedding_text(data.content, data.summary)
+        embedding_model = EMBEDDING_MODEL  # 向量空间身份,随向量一起落库
         try:
             embedding = await asyncio.to_thread(embed_text, text)
         except Exception:
@@ -188,8 +197,11 @@ class MemoryProvider(Provider):
                 "MemoryProvider.store: embed_text failed — storing without embedding"
             )
             embedding = None
+            embedding_model = None
         memory = Memory(
             user_id=data.user_id,
+            agent_id=data.agent_id,  # P1-3: was dropped → every SDK-stored row
+            # silently landed in agent_id="default"; now honours the caller's scope.
             type=data.type,
             content=data.content,
             summary=data.summary,
@@ -198,6 +210,7 @@ class MemoryProvider(Provider):
             source=data.source,
             status=MemoryStatus.ACTIVE,
             embedding=embedding,
+            embedding_model=embedding_model,
         )
         async with self._session_factory() as session:
             session.add(memory)
@@ -240,9 +253,10 @@ class MemoryProvider(Provider):
             # or hard-failing the update (see store() for the full rationale).
             if data.content is not None:
                 memory.content = data.content
-                text = f"{memory.content}\n{memory.summary or ''}".strip()
+                text = memory_embedding_text(memory.content, memory.summary)
                 try:
                     memory.embedding = await asyncio.to_thread(embed_text, text)
+                    memory.embedding_model = EMBEDDING_MODEL
                 except Exception:
                     logger.exception(
                         "MemoryProvider.update: embed_text failed for %s — leaving embedding NULL",
@@ -288,7 +302,7 @@ class MemoryProvider(Provider):
         try:
             async with self._session_factory() as session:
                 await session.execute(text("SELECT 1"))
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("MemoryProvider health check failed")
             healthy = False
         latency_ms = (time.perf_counter() - start) * 1000.0

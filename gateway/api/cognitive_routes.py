@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.database import get_session
 from gateway.models import Memory, MemoryStatus
-from gateway.schemas.memory import MemorySearch
 from gateway.services import MemoryService
 from core.orchestrator import get_orchestrator
 from core.forget import get_forget_engine

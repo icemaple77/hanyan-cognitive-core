@@ -327,61 +327,47 @@ _NAMED_STATE_PRIMARY_DIM: dict[str, str] = {
 }
 
 
-def compute_named_state(state: dict[str, float], settings: CoreSettings | None = None) -> str:
-    """Resolve the 6-dim state to one named composite state (2.2).
+# 维度 → 主命名态(按"高于 baseline 最多"的维取名)。worry 在函数里特判。
+_DIM_TO_NAMED: dict[str, str] = {
+    "closeness": NAMED_STATE_ATTACHMENT,
+    "happiness": NAMED_STATE_ELATED,
+    "focus": NAMED_STATE_FOCUSED,
+    "fatigue": NAMED_STATE_TIRED,
+    "curiosity": NAMED_STATE_CURIOUS,
+    "sadness": NAMED_STATE_LOW,
+    "anger": NAMED_STATE_WRONGED,
+    "jealousy": NAMED_STATE_JEALOUS,
+    "shyness": NAMED_STATE_SHY,
+    "tenderness": NAMED_STATE_TENDER,
+    "loneliness": NAMED_STATE_LONELY,
+    "playfulness": NAMED_STATE_PLAYFUL,
+    "anxiety": NAMED_STATE_ANXIOUS,
+    "excitement": NAMED_STATE_EXCITED,
+    "arousal": NAMED_STATE_AROUSED,
+    "ecstasy": NAMED_STATE_ECSTATIC,
+}
+_NAMED_SALIENCE_MIN = 0.10  # 最突出的维高于常态不到这个 → 平静(此刻无明显情绪)
 
-    Rules are evaluated most-specific-first (mirrors the stateDiagram in
-    docs/emotion-design.md); the first match wins, falling back to 平静.
+
+def compute_named_state(
+    state: dict[str, float],
+    settings: CoreSettings | None = None,
+    baseline: dict[str, float] | None = None,
+) -> str:
+    """按"相对 baseline 的偏离"命名此刻情绪(2026-08-31 重写)。
+
+    旧版用绝对阈值判定,但她 baseline 本身就高(好奇0.7/亲近0.5/喜悦0.6),
+    从常态就命中"依恋/好奇",命名态卡死。改为:此刻**高于常态最多**的维决定
+    名字;没有维明显高于常态 → 平静。这样命名态真正跟着"此刻比平时更突出什么"走。
     """
-    s = settings or core_settings
-
-    def g(key: str) -> float:
-        return float(state.get(key, DEFAULT_STATE.get(key, 0.5)))
-
-    if g("closeness") > s.emotion_attachment_closeness and g("happiness") > s.emotion_attachment_happiness:
-        return NAMED_STATE_ATTACHMENT
-    if (
-        g("happiness") > s.emotion_elated_happiness
-        and g("curiosity") > s.emotion_elated_curiosity
-        and g("fatigue") < s.emotion_elated_fatigue_max
-    ):
-        return NAMED_STATE_ELATED
-    if g("focus") > s.emotion_focused_focus and g("fatigue") < s.emotion_focused_fatigue_max:
-        return NAMED_STATE_FOCUSED
-    if g("fatigue") > s.emotion_tired_fatigue:
-        return NAMED_STATE_TIRED
-    if g("happiness") < s.emotion_low_happiness_max and g("worry") > s.emotion_low_worry:
-        return NAMED_STATE_LOW
-    if g("worry") > s.emotion_worried_worry:
-        return NAMED_STATE_WORRIED
-    if g("curiosity") > s.emotion_curious_curiosity and g("worry") < s.emotion_curious_worry_max:
-        return NAMED_STATE_CURIOUS
-
-    # New-dims cascade (soul v0.2) — checked after the original 8 states so a
-    # strong old-dim state (依恋/雀跃/专注/...) stays authoritative and a new
-    # dim only speaks up once nothing above already claimed this turn. Order
-    # mirrors soul_encoder's STATE_OVERRIDE_PRIORITY (most intense first).
-    if g("ecstasy") > s.emotion_ecstasy_ecstasy:
-        return NAMED_STATE_ECSTATIC
-    if g("arousal") > s.emotion_arousal_arousal:
-        return NAMED_STATE_AROUSED
-    if g("excitement") > s.emotion_excitement_excitement:
-        return NAMED_STATE_EXCITED
-    if g("anger") > s.emotion_anger_anger:
-        return NAMED_STATE_WRONGED
-    if g("jealousy") > s.emotion_jealousy_jealousy:
-        return NAMED_STATE_JEALOUS
-    if g("anxiety") > s.emotion_anxiety_anxiety:
-        return NAMED_STATE_ANXIOUS
-    if g("tenderness") > s.emotion_tenderness_tenderness:
-        return NAMED_STATE_TENDER
-    if g("loneliness") > s.emotion_loneliness_loneliness:
-        return NAMED_STATE_LONELY
-    if g("shyness") > s.emotion_shyness_shyness:
-        return NAMED_STATE_SHY
-    if g("playfulness") > s.emotion_playfulness_playfulness:
-        return NAMED_STATE_PLAYFUL
-    return NAMED_STATE_CALM
+    base = baseline or DEFAULT_STATE
+    devs = {d: state.get(d, 0.0) - base.get(d, DEFAULT_STATE.get(d, 0.0)) for d in DEFAULT_STATE}
+    dom = max(devs, key=devs.get)
+    if devs[dom] < _NAMED_SALIENCE_MIN:
+        return NAMED_STATE_CALM
+    if dom == "worry":  # 担忧维:喜悦也明显走低时读作"低落",否则"担忧"
+        return NAMED_STATE_LOW if devs.get("happiness", 0.0) < -_NAMED_SALIENCE_MIN else NAMED_STATE_WORRIED
+    return _DIM_TO_NAMED.get(dom, NAMED_STATE_CALM)
 
 
 def _named_state_intensity(named_state: str, state: dict[str, float]) -> float:
@@ -413,6 +399,25 @@ _STRUCTURAL_TRIGGERS: dict[str, dict[str, float]] = {
 }
 
 _REDIS_KEY = "hcc:emotion:state:v2"
+
+# 神经更新的"显著度"门槛:soul 读数偏离该维 baseline 不到这个,就不算"这句话在动
+# 这一维"——不更新它,交给衰减自然回落。避免每句话把 17 维一起拉动、出不自洽的态。
+_NEURAL_SALIENCE_MIN = 0.12
+
+# 对立情绪对(a, b, 互抑强度 k):情绪不该"又哭又笑"——每次更新后让对立维互相抑制
+# (opponent-process),高的一方压低对立方。杜绝矛盾态(2026-08-31 ③)。
+_OPPONENTS: list[tuple[str, str, float]] = [
+    ("happiness", "sadness", 0.5),
+    ("happiness", "anger", 0.4),
+    ("happiness", "worry", 0.35),
+    ("playfulness", "sadness", 0.4),
+    ("playfulness", "loneliness", 0.35),
+    ("tenderness", "anger", 0.45),
+    ("closeness", "loneliness", 0.45),
+    ("focus", "anxiety", 0.35),
+    ("excitement", "sadness", 0.4),
+    ("curiosity", "fatigue", 0.3),
+]
 
 
 class EmotionEngine:
@@ -459,6 +464,16 @@ class EmotionEngine:
             self._state[dim] += (target - self._state[dim]) * min(decay_rate, 0.5)
         self._last_update = now
 
+    def _enforce_coherence(self) -> None:
+        """对立情绪互相抑制(opponent-process),杜绝'又哭又笑'的矛盾态。
+        每次更新后调一次:高的一方按强度 k 压低对立方。用更新前快照算抑制量,
+        避免遍历顺序影响结果;多个对立方叠加抑制(又气又愁则喜悦压得更低)。"""
+        pre = dict(self._state)
+        for a, b, k in _OPPONENTS:
+            if a in self._state and b in self._state:
+                self._state[a] = max(0.0, self._state[a] - k * pre[b])
+                self._state[b] = max(0.0, self._state[b] - k * pre[a])
+
     def update(
         self,
         text: str,
@@ -491,6 +506,7 @@ class EmotionEngine:
             for dim, shift in shifts.items():
                 if dim in self._state:
                     self._state[dim] = max(0.0, min(1.0, self._state[dim] + shift * factor))
+        self._enforce_coherence()  # 对立情绪互抑,杜绝矛盾态
 
         snapshot = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -578,7 +594,7 @@ class EmotionEngine:
         """Get emotional summary for prompt injection (full mode, 2.2/2.4)."""
         s = self.state
         primary = max(s, key=s.get) if s else "neutral"
-        named = compute_named_state(s, self._settings)
+        named = compute_named_state(s, self._settings, self._baseline)
         meta = NAMED_STATE_META[named]
         return {
             "state": s,
@@ -598,7 +614,7 @@ class EmotionEngine:
         dimension model at all.
         """
         s = self.state
-        named = compute_named_state(s, self._settings)
+        named = compute_named_state(s, self._settings, self._baseline)
         meta = NAMED_STATE_META[named]
         return {
             "emotion": named,
@@ -648,7 +664,7 @@ class EmotionEngine:
                 self._last_update = datetime.fromisoformat(last_update)
             logger.info("emotion state restored from redis (last_update=%s)", self._last_update.isoformat())
             return True
-        except Exception:  # noqa: BLE001 - a Redis hiccup must not block startup
+        except Exception:
             logger.warning("failed to load emotion state from redis", exc_info=True)
             return False
 
@@ -665,7 +681,7 @@ class EmotionEngine:
                     {"state": self._state, "baseline": self._baseline, "last_update": self._last_update.isoformat()},
                     category="emotion",
                 )
-        except Exception:  # noqa: BLE001 - persistence is best-effort
+        except Exception:
             logger.warning("failed to persist emotion state to redis", exc_info=True)
 
     async def _fetch_neural_offsets(self, text: str) -> dict[str, float] | None:
@@ -687,7 +703,7 @@ class EmotionEngine:
             if not isinstance(dims, dict):
                 return None
             return {k: float(v) for k, v in dims.items() if k in DEFAULT_STATE}
-        except Exception:  # noqa: BLE001 - a soul-service hiccup must not break emotion updates
+        except Exception:
             logger.warning("soul neural perception unreachable, falling back to keyword triggers", exc_info=True)
             return None
 
@@ -711,10 +727,22 @@ class EmotionEngine:
 
         self._apply_decay()
         factor = 1.0 if importance is None else (0.5 + max(0.0, min(1.0, importance)))
-        triggered = [dim for dim, shift in offsets.items() if shift > 0.05]
-        for dim, shift in offsets.items():
-            if dim in self._state:
-                self._state[dim] = max(0.0, min(1.0, self._state[dim] + shift * factor))
+        # soul 给的是本轮"情绪读数"(绝对值,恒正),不是增量——必须向读数靠拢(EWMA),
+        # 不能累加,否则恒正读数每轮往上顶,全维必然饱和到 1.0(2026-08-31 修复)。
+        # 且只动"显著维"(读数明显偏离 baseline 的),其余不碰、交给衰减,避免全维乱抖。
+        w_base = min(0.6, 0.35 * factor)
+        triggered: list[str] = []
+        for dim, reading in offsets.items():
+            if dim not in self._state:
+                continue
+            base = self._baseline.get(dim, DEFAULT_STATE.get(dim, 0.0))
+            salience = abs(reading - base)
+            if salience < _NEURAL_SALIENCE_MIN:
+                continue  # 不显著:不更新,让 _apply_decay 把它带回 baseline
+            triggered.append(dim)
+            w = min(0.7, w_base * (0.5 + salience * 2.0))  # 越显著,拉向读数越狠
+            self._state[dim] = max(0.0, min(1.0, (1.0 - w) * self._state[dim] + w * reading))
+        self._enforce_coherence()  # 对立情绪互抑,杜绝矛盾态
 
         snapshot = {
             "timestamp": datetime.now(timezone.utc).isoformat(),

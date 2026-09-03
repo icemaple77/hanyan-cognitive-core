@@ -129,7 +129,7 @@ async def main_async(args: argparse.Namespace) -> int:
                     if not args.dry_run:
                         try:
                             await apply_decision(client, args.hcc_url, item, decision)
-                        except Exception as exc:  # noqa: BLE001 - keep scanning past a single bad row
+                        except Exception as exc:
                             errors += 1
                             logger.warning("update failed for id=%s: %s", item["id"], exc)
 

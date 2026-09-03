@@ -126,7 +126,7 @@ async def _call_ollama(content: str) -> FilterDecision | None:
             data = json.loads(raw)
         importance = max(0.0, min(1.0, float(data["importance"])))
         return FilterDecision(keep=bool(data["keep"]), importance=importance, source="model")
-    except Exception:  # noqa: BLE001 - any failure degrades to the heuristic, never raises
+    except Exception:
         logger.warning("local_filter: Ollama evaluate failed, degrading to heuristic", exc_info=True)
         return None
 

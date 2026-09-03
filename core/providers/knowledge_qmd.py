@@ -47,6 +47,12 @@ from core.providers.base import (
 
 logger = logging.getLogger(__name__)
 
+# 解析结果缓存:path -> (mtime_ns, size, item, haystack)。见 _parse_cached 说明。
+# haystack = 小写化的 "heading\ncontent",**预先算好**:匹配循环原本每次查询都要把
+# 1124 篇全文重新 .lower() 拷贝一遍(profile 实测 288ms,占知识检索 93%)。
+# 进程内常驻(网关常开),语料纯文本,内存开销可忽略。
+_PARSE_CACHE: dict[str, tuple[int, int, dict, str]] = {}
+
 __all__ = ["KnowledgeProviderSettings", "KnowledgeQMDProvider"]
 
 # type/tag keyword -> knowledge category (sub-folder). Mirrors the generator.
@@ -177,6 +183,36 @@ class KnowledgeQMDProvider(Provider):
                 pass
             raise
 
+    def _parse_cached(self, path: Path) -> dict[str, Any]:
+        """带缓存的 :meth:`_parse` —— 键是 (路径, mtime_ns, 大小)。
+
+        2026-09-03 profile:``/context`` p50=783ms,其中 **683ms(88%)** 花在知识
+        检索——因为每次查询都把 Knowledge 下的 1129 个 md 全量 read_text + YAML
+        前言解析一遍。语料几乎不变,却每轮对话重做一次全量 I/O。
+
+        用 stat 做键而不是 TTL:文件一改 mtime/大小就变,缓存自动失效,**没有任何
+        陈旧窗口**;目录仍每次 rglob,新增文件立刻可见。正确性与改前完全一致。
+        """
+        try:
+            st = path.stat()
+            key = (str(path), st.st_mtime_ns, st.st_size)
+        except OSError:
+            return self._parse(path)
+        hit = _PARSE_CACHE.get(key[0])
+        if hit is not None and hit[0] == key[1] and hit[1] == key[2]:
+            return hit[2]
+        item = self._parse(path)
+        hay = f"{item['heading']}\n{item['content']}".lower()
+        _PARSE_CACHE[key[0]] = (key[1], key[2], item, hay)
+        return item
+
+    def _cached_haystack(self, path: Path, item: dict[str, Any]) -> str:
+        """取预先小写化的检索文本(缓存未命中则现算,保证正确性)。"""
+        hit = _PARSE_CACHE.get(str(path))
+        if hit is not None and hit[2] is item:
+            return hit[3]
+        return f"{item['heading']}\n{item['content']}".lower()
+
     def _parse(self, path: Path) -> dict[str, Any]:
         """Parse a markdown document into a JSON-safe item dict."""
         raw = path.read_text(encoding="utf-8")
@@ -237,6 +273,62 @@ class KnowledgeQMDProvider(Provider):
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
+    async def _search_indexed(self, query: SearchQuery) -> SearchResult:
+        """走 documents 表的 BM25 + 向量 + RRF —— 快路(2026-09-03)。
+
+        原实现每次查询暴力扫 54MB 全文、按"命中几个 jieba token"排序:1124 篇里
+        617 篇都算命中,词面重复多的旧档天然靠前(问"含烟的身份锚点"召回的是
+        "HanyanOS Soul 模型化方案需分层"这种擦边货)。既慢(207ms)又不对题。
+
+        改走 documents 表:同一批文件已由索引器入库并带 768 维向量,检索是真正的
+        语义 + BM25 融合。用 path_prefix 限定 Knowledge 子树,而不是单开 collection
+        (单开会与 aicore 全量扫描重复索引同一批文件)。
+
+        heading 仍从正文的 `# 标题` 现取(索引器把 title 存成文件名),只对返回的
+        ≤limit 条做,开销可忽略,显示效果与老实现一致。
+        """
+        from gateway.core.database import async_session
+        from gateway.core.embeddings import embed_text
+        from gateway.services.document_service import DocumentService
+        from core.doc_index import knowledge_path_prefix
+
+        try:
+            emb = embed_text(query.query, is_query=True) if query.query else None
+        except Exception:  # 嵌入不可用 → 退化成纯 BM25,不挡检索
+            logger.warning("knowledge search: 查询嵌入失败,退化为 BM25", exc_info=True)
+            emb = None
+
+        async with async_session() as session:
+            rows = await DocumentService(session).hybrid_search(
+                query=query.query or "", embedding=emb,
+                limit=query.limit + query.offset,
+                path_prefix=knowledge_path_prefix() or None,
+            )
+        items: list[dict[str, Any]] = []
+        for row in rows[query.offset:]:
+            # hybrid_search 返回 {document: <ORM 对象>, snippet, rrf_score, ...}
+            doc = row.get("document")
+            if doc is None:
+                continue
+            content = doc.content or ""
+            rel = doc.path or ""
+            m = _HEADING_RE.search(content)
+            parts = rel.split("/")
+            items.append({
+                "id": rel,
+                "path": rel,
+                "category": parts[-2] if len(parts) > 1 else DEFAULT_CATEGORY,
+                # 索引器把 title 存成文件名,正文里的 `# 标题` 更可读 —— 只对返回的
+                # ≤limit 条现取,开销可忽略,显示效果与老的文件扫描实现一致。
+                "heading": (m.group(1).strip() if m else (doc.title or rel)),
+                "content": content,
+                "type": None, "user_id": None, "importance": None,
+                "tags": [], "source": "documents",
+                "snippet": row.get("snippet"),
+                "score": row.get("rrf_score"),
+            })
+        return SearchResult(items=items, total=len(rows), provider=self.name)
+
     async def search(self, query: SearchQuery) -> SearchResult:
         """Search knowledge documents by heading/content (and optional type).
 
@@ -250,11 +342,22 @@ class KnowledgeQMDProvider(Provider):
         hit count (most matching tokens first), then paginated with
         ``offset``/``limit``. An empty ``query`` lists everything.
         """
+        # 分流:不带 frontmatter 过滤时走索引快路(语义检索,~50ms)。带 type/
+        # user_id 过滤的调用方仍走下面的文件扫描——documents 表不存 frontmatter,
+        # 为了快而悄悄丢掉过滤能力是不可接受的。
+        if query.query and not query.type and not query.user_id:
+            try:
+                return await self._search_indexed(query)
+            except Exception:  # 索引路径出问题 → 回退文件扫描,绝不让知识检索断供
+                logger.warning("knowledge 索引检索失败,回退文件扫描", exc_info=True)
+
         tokens = tokenize_for_fts(query.query or "").split()
+        # token 小写只做一次 —— 原本写在 per-doc 循环里,1124 篇 × N token 次冗余调用
+        tokens_lower = [t.lower() for t in tokens]
         matches: list[tuple[int, dict[str, Any]]] = []
         for path in self._iter_docs():
             try:
-                item = self._parse(path)
+                item = self._parse_cached(path)
             except OSError:
                 logger.warning("Failed to read QMD doc %s", path, exc_info=True)
                 continue
@@ -263,8 +366,8 @@ class KnowledgeQMDProvider(Provider):
             if query.user_id and str(item.get("user_id")) != str(query.user_id):
                 continue
             if tokens:
-                haystack = f"{item['heading']}\n{item['content']}".lower()
-                hits = sum(1 for tok in tokens if tok.lower() in haystack)
+                haystack = self._cached_haystack(path, item)
+                hits = sum(1 for tok in tokens_lower if tok in haystack)
                 if not hits:
                     continue
                 matches.append((hits, item))
@@ -348,7 +451,7 @@ class KnowledgeQMDProvider(Provider):
             # Root need not exist yet (empty KB); only fail on real IO errors.
             if self.root.exists():
                 _ = list(self.root.iterdir())
-        except OSError:  # noqa: BLE001
+        except OSError:
             logger.exception("KnowledgeQMDProvider health check failed")
             healthy = False
         latency_ms = (time.perf_counter() - start) * 1000.0

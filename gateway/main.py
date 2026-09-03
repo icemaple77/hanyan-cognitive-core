@@ -10,9 +10,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-# Must run before any HCC module import — several modules (gateway.core.embeddings
-# in particular) read os.getenv() directly rather than through pydantic Settings'
-# own env_file parsing, so without this they silently ignore .env entirely.
+# 保留 load_dotenv():配置已统一到 core.config(pydantic Settings 自带 env_file),
+# 但把 .env 灌进真实环境仍有用——独立脚本 / MCP 子进程 / 第三方库仍按 env 读。
 load_dotenv()
 
 from core.config import core_settings
@@ -21,9 +20,10 @@ from core.emotion import get_emotion_engine
 from core.emotion_events import subscribe_emotion_events
 from core.noise_filter_events import subscribe_noise_filter_events
 from core.sync_engine import SyncEngine
-from gateway.api import health, memory_routes, context_routes, graph_routes, emotion_routes, cognitive_routes, document_routes, events_routes, sync_routes, dream_routes, vault_routes, export_routes
+from gateway.api import health, memory_routes, context_routes, graph_routes, emotion_routes, cognitive_routes, document_routes, events_routes, sync_routes, dream_routes, vault_routes, export_routes, task_routes, priority_routes
 from gateway.core.database import engine, Base
 from gateway.core.events import get_event_bus
+from gateway.core.vector_guard import check_vector_dims
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ async def _dream_light_loop() -> None:
             await DreamEngine().run_light()
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - keep the loop alive
+        except Exception:
             logger.exception("dream light phase failed")
 
 
@@ -73,7 +73,7 @@ async def _dream_rem_loop() -> None:
             await DreamEngine().run_rem()
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - keep the loop alive
+        except Exception:
             logger.exception("dream REM phase failed")
 
 
@@ -88,7 +88,7 @@ async def _dream_deep_loop() -> None:
             await DreamEngine().run_deep()
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - keep the loop alive
+        except Exception:
             logger.exception("dream deep phase failed")
 
 
@@ -108,8 +108,53 @@ async def _periodic_sync_loop() -> None:
             await SyncEngine().sync_once()
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - keep the loop alive
+        except Exception:
             logger.exception("periodic sync pass failed")
+
+
+async def _harvester_loop() -> None:
+    """每 HCC_HARVEST_INTERVAL 秒收割各 runtime 会话文件的新对话入库(过 4b 初筛)。
+
+    Agent 无感:纯读会话文件(openclaw/claude/…),不依赖任何插件钩子——这是公子
+    最早的设计(docs/03「拉取全部对话」),把 08-26 漂成插件打包的记忆链路拉回来。
+    见 core/session_harvester.py。异常吞掉保活。
+    """
+    from core.session_harvester import SessionHarvester
+
+    interval = core_settings.harvest_interval
+    harvester = SessionHarvester()
+    logger.info("session harvester started (interval=%ss)", interval)
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await harvester.harvest_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("session harvest pass failed")
+
+
+async def _doc_index_loop() -> None:
+    """每 HCC_DOC_INDEX_INTERVAL 秒增量索引 md 文档,让知识检索保持新鲜。
+
+    知识检索原先直接读文件(慢,但永远新鲜);改走 documents 表的语义检索后,
+    必须自己负责新鲜度——否则就是"静默服务过期内容",正是 2026-09-03 修了一天的
+    那类失效方式。按 (mtime, 大小) 签名比对,没变的文件不读不算,一轮只有 stat
+    开销,所以可以跑得很勤。见 core/doc_index.py。异常吞掉保活。
+    """
+    from core.doc_index import DocIndexSync
+
+    interval = core_settings.doc_index_interval
+    syncer = DocIndexSync()
+    logger.info("doc index sync started (interval=%ss)", interval)
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await syncer.sync_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("doc index sync pass failed")
 
 
 @asynccontextmanager
@@ -118,6 +163,57 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
+        # create_all 只建新表(priorities 走这)、不给已存在的表加列。tasks 表已存在,
+        # 循环任务新增的 repeat 列必须显式补,否则 ORM 期待的列库里没有 → task_create 崩。
+        await conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS repeat VARCHAR(64)"))
+        # 向量来源标记(2026-09-03):记下每条向量是哪个模型算的,换模型时
+        # "谁还没重算" 变成一条 SQL,而不是像 08-29 那样靠人肉记(结果漏了整张表)。
+        for _tbl in ("memories", "documents"):
+            await conn.execute(text(
+                f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(128)"))
+            await conn.execute(text(
+                f"CREATE INDEX IF NOT EXISTS ix_{_tbl}_embedding_model "
+                f"ON {_tbl} (embedding_model)"))
+        # 关键词搜索(/memory/search)走 content ILIKE '%q%' 前置通配符,用不上普通
+        # 索引 → 11.4k 行 Seq Scan,实测 745ms(且 count 再扫一遍)。pg_trgm 让它走
+        # Bitmap Index Scan:实测 4 字查询 765ms→7.5ms、6 字→0.15ms。
+        # 注意:trigram 需要 ≥3 字符,2 字中文词(如"含烟")仍会 Seq Scan——pg_trgm
+        # 的固有限制,不是配置问题。
+        # 写在这里而不是手工敲 SQL:2026-08-29 的向量事故正是"手工改库、无痕迹、
+        # 换机器/重建库就丢失"造成的,同样的坑不踩第二次。
+        # BM25 排序用的 tsvector 生成列:ts_rank_cd 若现算 to_tsvector(search_text),
+        # PG 要为每个命中行重解析全文,ORDER BY rank 更逼它全算一遍——实测 documents
+        # 上同一查询 891ms;改用生成列后 0.588ms(1500×)。生成列由 PG 维护,永不失同步。
+        await conn.execute(text(
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS search_tsv tsvector "
+            "GENERATED ALWAYS AS (to_tsvector('simple', search_text)) STORED"))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_documents_search_tsv ON documents USING gin (search_tsv)"))
+        # memories 的 BM25 排序列。documents 用的是 PG 生成列,但 memories 已有
+        # 11.7 万行/149MB,改成生成列要重写整表并长时间锁读写;这里用"瞬时加列 +
+        # 触发器"达到同样的数据库侧保证(永不与 search_text 失同步)。
+        await conn.execute(text("ALTER TABLE memories ADD COLUMN IF NOT EXISTS search_tsv tsvector"))
+        await conn.execute(text("""
+            CREATE OR REPLACE FUNCTION memories_search_tsv_trg() RETURNS trigger AS $BODY$
+            BEGIN
+              NEW.search_tsv := to_tsvector('simple', COALESCE(NEW.search_text, ''));
+              RETURN NEW;
+            END $BODY$ LANGUAGE plpgsql"""))
+        await conn.execute(text("DROP TRIGGER IF EXISTS trg_memories_search_tsv ON memories"))
+        await conn.execute(text("""
+            CREATE TRIGGER trg_memories_search_tsv BEFORE INSERT OR UPDATE OF search_text
+            ON memories FOR EACH ROW EXECUTE FUNCTION memories_search_tsv_trg()"""))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_memories_search_tsv ON memories USING gin (search_tsv)"))
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+        for _idx, _col in (("ix_memories_content_trgm", "content"),
+                           ("ix_memories_summary_trgm", "summary")):
+            await conn.execute(text(
+                f"CREATE INDEX IF NOT EXISTS {_idx} ON memories USING gin ({_col} gin_trgm_ops)"))
+        # 向量维度自检:换模型漏迁移会让相关表的语义检索静默降级(2026-08-29 事故,
+        # documents 死了 5 天没人知道)。不一致时大声报错并挂到 /health,但不拒绝
+        # 启动——HCC 不能挂,宁可响铃也不停机。见 gateway/core/vector_guard.py。
+        await check_vector_dims(conn, core_settings.embedding_dim)
     bus = await get_event_bus().connect()
     logger.info("EventBus connected (backend=%s)", bus.backend)
 
@@ -145,20 +241,40 @@ async def lifespan(app: FastAPI):
             core_settings.dream_deep_hour, core_settings.dream_deep_minute,
         )
 
+    harvest_task: asyncio.Task | None = None
+    if core_settings.harvester_enabled:
+        harvest_task = asyncio.create_task(_harvester_loop())
+
+    doc_index_task: asyncio.Task | None = None
+    if core_settings.doc_index_enabled:
+        doc_index_task = asyncio.create_task(_doc_index_loop())
+
     yield
     # Shutdown
+    if doc_index_task is not None:
+        doc_index_task.cancel()
+        try:
+            await doc_index_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    if harvest_task is not None:
+        harvest_task.cancel()
+        try:
+            await harvest_task
+        except (asyncio.CancelledError, Exception):
+            pass
     if sync_task is not None:
         sync_task.cancel()
         try:
             await sync_task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        except (asyncio.CancelledError, Exception):
             pass
     for task in dream_tasks:
         task.cancel()
     for task in dream_tasks:
         try:
             await task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        except (asyncio.CancelledError, Exception):
             pass
     await get_event_bus().close()
     await engine.dispose()
@@ -192,3 +308,5 @@ app.include_router(sync_routes.router, prefix="/api/v1", tags=["sync"])
 app.include_router(dream_routes.router, prefix="/api/v1", tags=["dream"])
 app.include_router(vault_routes.router, prefix="/api/v1", tags=["vault"])
 app.include_router(export_routes.router, prefix="/api/v1", tags=["export"])
+app.include_router(task_routes.router, prefix="/api/v1", tags=["tasks"])
+app.include_router(priority_routes.router, prefix="/api/v1", tags=["priorities"])

@@ -8,7 +8,8 @@ from typing import Optional
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.core.embeddings import embed_text
+from core.config import core_settings
+from gateway.core.embeddings import EMBEDDING_MODEL, embed_text, memory_embedding_text
 from gateway.core.events import publish_conflict_event
 from gateway.core.fts import tokenize_for_fts
 from gateway.core.rerank import RERANK_ENABLED, rerank as rerank_fn
@@ -48,9 +49,10 @@ class MemoryService:
         # callers that still pass it don't break.
         payload.pop("embedding", None)
         memory = Memory(**payload)
-        text = f"{memory.content}\n{memory.summary}".strip()
+        text = memory_embedding_text(memory.content, memory.summary)
         try:
             memory.embedding = await asyncio.to_thread(embed_text, text)
+            memory.embedding_model = EMBEDDING_MODEL
         except Exception:
             logger.exception("embed_text failed for new memory — storing without embedding")
 
@@ -184,6 +186,34 @@ class MemoryService:
             )
         return stmt
 
+    @staticmethod
+    def _apply_recency_source_weighting(fused: list[dict]) -> None:
+        """Reweight RRF-fused results by memory age and source (P2-7), in place.
+
+        Multiplies each item's ``rrf_score`` by a recency-decay factor
+        (``0.5 ** (age_days / half_life)``, see ``retrieval_recency_half_life_days``)
+        and a per-``Memory.source`` weight (``retrieval_source_weights``), then
+        re-sorts. Multiplicative, not a replacement, so topical relevance from
+        BM25+vector stays the dominant signal — this only breaks ties/near-ties
+        in favor of newer, non-bulk-migrated memories.
+        """
+        if not fused:
+            return
+        if not core_settings.retrieval_recency_weighting_enabled and not core_settings.retrieval_source_weights:
+            return
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        half_life = core_settings.retrieval_recency_half_life_days
+        for item in fused:
+            memory = item["memory"]
+            weight = core_settings.retrieval_source_weights.get(memory.source, 1.0)
+            if core_settings.retrieval_recency_weighting_enabled and memory.created_at:
+                age_days = max(0.0, (now - memory.created_at).total_seconds() / 86400.0)
+                weight *= 0.5 ** (age_days / half_life)
+            item["rrf_score"] *= weight
+
+        fused.sort(key=lambda item: item["rrf_score"], reverse=True)
+
     async def semantic_search(
         self,
         embedding: list[float],
@@ -242,7 +272,10 @@ class MemoryService:
         # segmented by us, and plainto_tsquery has no special operator syntax
         # (quotes/OR/-) to misinterpret if a jieba token happens to start
         # with a character like '-'. It just ANDs every token together.
-        tsvector_expr = func.to_tsvector("simple", Memory.search_text)
+        # 用触发器维护的 search_tsv 列,而不是现算 to_tsvector(search_text):
+        # 后者让 PG 为每个命中行重解析全文,ORDER BY rank 更逼它全算一遍
+        # (实测 507ms → 11.8ms,43x)。列由 trg_memories_search_tsv 保证同步。
+        tsvector_expr = Memory.search_tsv
         tsquery_expr = func.plainto_tsquery("simple", tokens)
         rank = func.ts_rank_cd(tsvector_expr, tsquery_expr).label("rank")
 
@@ -303,7 +336,7 @@ class MemoryService:
 
         if query and not embedding:
             try:
-                embedding = await asyncio.to_thread(embed_text, query)
+                embedding = await asyncio.to_thread(embed_text, query, is_query=True)
             except Exception:
                 logger.exception("embed_text failed for hybrid_search query — falling back to BM25-only")
 
@@ -319,6 +352,7 @@ class MemoryService:
         fused = reciprocal_rank_fusion(bm25_results, vector_results)
         for item in fused:
             item["memory"] = item.pop("row")
+        self._apply_recency_source_weighting(fused)
         do_rerank = rerank and RERANK_ENABLED
         top = fused[: max(limit, candidate_pool) if do_rerank else limit]
 

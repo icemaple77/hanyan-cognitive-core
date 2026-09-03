@@ -58,14 +58,14 @@ async def _on_memory_created(event: Event) -> None:
         await get_emotion_engine().update_and_persist(
             str(content), source="memory_created", importance=importance
         )
-    except Exception:  # noqa: BLE001 - never let emotion updates break the event pipeline
+    except Exception:
         logger.exception("emotion update failed for memory_created event")
 
 
 async def _on_memory_deleted(_event: Event) -> None:
     try:
         await get_emotion_engine().apply_structural_event_and_persist("memory_deleted")
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("emotion update failed for memory_deleted event")
 
 

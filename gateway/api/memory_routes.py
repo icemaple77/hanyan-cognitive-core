@@ -38,6 +38,7 @@ async def store_memory(
         "store",
         memory.id,
         user_id=memory.user_id,
+        agent_id=memory.agent_id,
         content=memory.content,
         importance=memory.importance,
         tags=memory.tags,
@@ -69,7 +70,7 @@ async def update_memory(
     memory = await service.update(data)
     if memory is None:
         raise HTTPException(status_code=404, detail="Memory not found")
-    await publish_memory_event("update", memory.id, user_id=memory.user_id)
+    await publish_memory_event("update", memory.id, user_id=memory.user_id, agent_id=memory.agent_id)
     return MemoryResponse.model_validate(memory)
 
 

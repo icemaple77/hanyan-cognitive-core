@@ -52,48 +52,23 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scanner.parser import parse_file, parse_pdf_file, PdfSkipped  # noqa: E402
-from gateway.core.database import async_session  # noqa: E402
-from gateway.services.document_service import DocumentService  # noqa: E402
+from scanner.parser import parse_file, parse_pdf_file, PdfSkipped
+from gateway.core.database import async_session
+from gateway.services.document_service import DocumentService
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("hcc.index_documents")
 
-EXCLUDE_DIRS = {
-    ".git", "node_modules", "__pycache__", ".venv", ".obsidian", "dist-info",
-    # Archive / backup material: physically or logically excluded from the
-    # index on purpose (see docs on Obsidian export — Archive is meant to be
-    # invisible to the indexer, not just low-priority).
-    "Archive", "归档", "完整备份", "AICore-Archive",
-    # core/agent_export.py dumps every active Memory (all types, incl. noisy
-    # tool_result/exec logs) as one file per row — thousands of tiny files.
-    # That content is already searchable natively via /memory/search and
-    # /memory/hybrid-search; re-indexing it into `documents` would duplicate
-    # it and drown out the curated collections with low-value noise. The
-    # agents/ tree is meant for browsing (see gateway/api/vault_routes.py),
-    # not document search.
-    "agents",
-}
-
-DEFAULT_COLLECTIONS = {
-    # Full AICore vault scan (156 md as of 2026-08-05) — the previous default
-    # only covered the 含烟记忆系统 subtree, silently skipping Tasks/,
-    # reports/, 日常流程/ and anything else at the vault root.
-    "aicore": "~/workspace/AICore",
-}
-
-# On by default; set HCC_INDEX_PDF=0 to index markdown only.
-INDEX_PDF = os.environ.get("HCC_INDEX_PDF", "1").strip().lower() not in ("0", "false", "no", "")
-
-
-def iter_indexable_files(root: Path):
-    suffixes = (".md", ".pdf") if INDEX_PDF else (".md",)
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
-        for name in filenames:
-            if name.lower().endswith(suffixes):
-                yield Path(dirpath) / name
-
+# 遍历规则与集合定义的**唯一来源**在 core/doc_index.py —— 网关的增量索引循环
+# (core.doc_index.DocIndexSync)与本脚本必须用同一套规则,分开写迟早会漂
+# (2026-09-03 的向量事故就是同一个知识有两个定义造成的)。
+from core.doc_index import (  # noqa: E402
+    DEFAULT_COLLECTIONS,
+    file_mtime_utc,
+    EXCLUDE_DIRS,
+    INDEX_PDF,
+    iter_indexable_files,
+)
 
 async def index_collection(collection: str, root: Path, *, embed: bool, embed_warned: list[bool]) -> dict:
     if not root.exists():
@@ -127,11 +102,11 @@ async def index_collection(collection: str, root: Path, *, embed: bool, embed_wa
                 else:
                     doc = parse_file(path)
 
-                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).replace(tzinfo=None)
+                mtime = file_mtime_utc(path)  # 与增量循环共用同一定义
 
                 embedding = None
                 if embed:
-                    from gateway.core.embeddings import embed_text, EMBEDDING_PROVIDER
+                    from gateway.core.embeddings import embed_text, document_embedding_text, EMBEDDING_PROVIDER
 
                     if EMBEDDING_PROVIDER == "hash":
                         if not embed_warned[0]:
@@ -141,7 +116,7 @@ async def index_collection(collection: str, root: Path, *, embed: bool, embed_wa
                             )
                             embed_warned[0] = True
                     else:
-                        embedding = embed_text(f"{doc.title}\n{doc.content}")
+                        embedding = embed_text(document_embedding_text(doc.title, doc.content))
 
                 _, was_changed = await service.upsert(
                     collection=collection,
@@ -156,7 +131,7 @@ async def index_collection(collection: str, root: Path, *, embed: bool, embed_wa
                     changed += 1
                 else:
                     skipped += 1
-            except Exception:  # noqa: BLE001 - one bad file must not abort the run
+            except Exception:
                 errors += 1
                 logger.exception("[%s] failed to index %s", collection, path)
 

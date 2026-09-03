@@ -26,6 +26,91 @@ class CoreSettings(BaseSettings):
         extra="ignore",
     )
 
+    # --- Database / API 面(2026-09-03 由 gateway/core/config.py 合并进来)----
+    database_url: str = Field(
+        default="postgresql+asyncpg://hcc:hcc@localhost:5432/hcc",
+        description="Postgres/pgvector DSN (HCC_DATABASE_URL).",
+    )
+    api_host: str = Field(default="0.0.0.0", description="Gateway 监听地址。")
+    api_port: int = Field(default=8000, description="Gateway 监听端口。")
+    debug: bool = Field(default=False, description="调试模式。")
+
+    # --- Embedding:维度的唯一真相源 -------------------------------------
+    # 2026-09-03 事故复盘:此前维度有两个互不相干的定义——gateway/models 硬编码
+    # 1024 用于建表,gateway/core/embeddings.py 从 env 读(实际 768)用于产出向量。
+    # 结果 documents 列是 1024、查询向量是 768,**每次语义检索都报 "different
+    # vector dimensions",知识检索静默降级为纯 BM25**(公子抱怨的"Knowledge 全是
+    # 技术旧档"的根因)。维度只许有这一个定义,建表与产出共用。
+    # provider 默认值也从 "hash" 改为真实模型:hash 兜底会静默产生无意义向量,
+    # 宁可在 .env 缺失时用对的模型,也不要悄悄写垃圾进库。
+    embedding_provider: str = Field(
+        default="sentence-transformers",
+        description="嵌入后端:sentence-transformers | ollama | hash(仅测试)。",
+    )
+    embedding_model: str = Field(
+        default="BAAI/bge-base-zh-v1.5", description="嵌入模型 id。"
+    )
+    embedding_dim: int = Field(
+        default=768, ge=1,
+        description="嵌入维度。**建表与运行时共用此值**,不得在别处硬编码。",
+    )
+    embedding_device: str = Field(default="cpu", description="sentence-transformers 设备。")
+    embedding_query_instruction: str = Field(
+        default="", description="BGE 非对称检索的 query 前缀指令(store 侧不加)。"
+    )
+    ollama_url: str = Field(
+        default="http://localhost:11434", description="ollama 服务地址(HCC_OLLAMA_URL)。"
+    )
+
+    # --- Rerank(可选重排,默认关)-----------------------------------------
+    rerank_enabled: bool = Field(default=False, description="是否启用 GGUF 重排。")
+    rerank_model_path: Path = Field(
+        default=Path("~/.cache/qmd/models/hf_ggml-org_qwen3-reranker-0.6b-q8_0.gguf").expanduser(),
+        description="重排模型 GGUF 路径。",
+    )
+    rerank_n_ctx: int = Field(default=2048, ge=1, description="重排模型上下文长度。")
+
+    # --- Session Harvester(各 runtime 会话收割)---------------------------
+    harvester_enabled: bool = Field(default=True, description="是否开启会话收割循环。")
+    harvest_interval: int = Field(default=60, ge=1, description="收割周期(秒)。")
+    harvest_user_id: str = Field(default="michael", description="收割入库归属 user_id。")
+    harvest_state: Path = Field(
+        default=Path.home() / ".hcc" / "harvester_state.json",
+        description="收割水位持久化路径。",
+    )
+    self_url: str = Field(
+        default="http://127.0.0.1:8000/api/v1",
+        description="进程内回调自身 API 的地址(收割器入库用)。",
+    )
+
+    # --- 文档索引增量同步(md 改动自动重新索引)---------------------------
+    doc_index_enabled: bool = Field(
+        default=True,
+        description=(
+            "是否开启文档增量索引循环。知识检索改走 documents 表后,若不自动检测"
+            "文件变更就会静默服务过期内容——这个开关默认必须是开的。"
+        ),
+    )
+    doc_index_interval: int = Field(
+        default=60, ge=5,
+        description=(
+            "增量索引巡检周期(秒)。按 (mtime, 大小) 签名比对,未变的文件不读不算,"
+            "一轮只有 stat 开销(实测 ~4ms/1124 文件),所以可以跑得很勤。"
+        ),
+    )
+
+    # --- 注入(读路渲染)---------------------------------------------------
+    inject_fragment_cap: int = Field(
+        default=0, ge=0,
+        description=(
+            "每轮系统注入里允许的 harvester 原始对话碎片条数上限。默认 0——碎片是"
+            "深挖检索池,不该霸占每轮注入位(保送席不受此限)。手感太薄可调到 3。"
+        ),
+    )
+
+    # --- Agent 身份 -------------------------------------------------------
+    agent_id: str = Field(default="default", description="本进程默认 agent_id(MCP 等)。")
+
     # --- Redis working memory / event bus -------------------------------
     redis_url: str = Field(
         default="redis://localhost:6379/0",
@@ -327,6 +412,32 @@ class CoreSettings(BaseSettings):
         "(HCC_NOISE_FILTER_TRUNCATE_CHARS). Matches the 8-sample validation run; "
         "not yet re-validated against the full tool_result content-length "
         "distribution (docs/local-noise-filter.md 三).",
+    )
+
+    # --- Retrieval recency / source weighting (P2-7) --------------------
+    # openclaw_sync bulk-migrated ~2000+ historical rows in one shot (same
+    # RRF rank distribution as everything else), so they compete on equal
+    # footing with genuinely new conversation memories at the same topical
+    # relevance — old data drowns out new. This reweights hybrid_search's
+    # already-fused rrf_score (multiplicatively, not a replacement — topical
+    # relevance from BM25+vector stays the primary signal) by how old a
+    # memory is and where it came from.
+    retrieval_recency_weighting_enabled: bool = Field(
+        default=True,
+        description="Master switch for exponential recency decay applied to "
+        "hybrid_search's fused rrf_score (HCC_RETRIEVAL_RECENCY_WEIGHTING_ENABLED).",
+    )
+    retrieval_recency_half_life_days: float = Field(
+        default=60.0, gt=0,
+        description="Half-life in days for the recency decay factor "
+        "(HCC_RETRIEVAL_RECENCY_HALF_LIFE_DAYS) — a memory this old is "
+        "weighted at 0.5x, twice this old at 0.25x, etc.",
+    )
+    retrieval_source_weights: dict[str, float] = Field(
+        default_factory=lambda: {"openclaw_sync": 0.5},
+        description="Per-Memory.source multiplier applied to rrf_score alongside "
+        "recency decay (HCC_RETRIEVAL_SOURCE_WEIGHTS as JSON, e.g. "
+        '\'{"openclaw_sync": 0.5}\'). Sources not listed default to 1.0 (no change).',
     )
 
     def ttl_for(self, category: str) -> int:
