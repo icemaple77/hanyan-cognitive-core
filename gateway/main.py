@@ -21,7 +21,7 @@ from core.emotion import get_emotion_engine
 from core.emotion_events import subscribe_emotion_events
 from core.noise_filter_events import subscribe_noise_filter_events
 from core.sync_engine import SyncEngine
-from gateway.api import health, memory_routes, context_routes, graph_routes, emotion_routes, cognitive_routes, document_routes, events_routes, sync_routes, dream_routes, vault_routes, export_routes, task_routes
+from gateway.api import health, memory_routes, context_routes, graph_routes, emotion_routes, cognitive_routes, document_routes, events_routes, sync_routes, dream_routes, vault_routes, export_routes, task_routes, priority_routes
 from gateway.core.database import engine, Base
 from gateway.core.events import get_event_bus
 
@@ -142,6 +142,9 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
+        # create_all 只建新表(priorities 走这)、不给已存在的表加列。tasks 表已存在,
+        # 循环任务新增的 repeat 列必须显式补,否则 ORM 期待的列库里没有 → task_create 崩。
+        await conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS repeat VARCHAR(64)"))
     bus = await get_event_bus().connect()
     logger.info("EventBus connected (backend=%s)", bus.backend)
 
@@ -228,3 +231,4 @@ app.include_router(dream_routes.router, prefix="/api/v1", tags=["dream"])
 app.include_router(vault_routes.router, prefix="/api/v1", tags=["vault"])
 app.include_router(export_routes.router, prefix="/api/v1", tags=["export"])
 app.include_router(task_routes.router, prefix="/api/v1", tags=["tasks"])
+app.include_router(priority_routes.router, prefix="/api/v1", tags=["priorities"])

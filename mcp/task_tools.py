@@ -39,6 +39,7 @@ async def task_create(
     user_id: str = "michael",
     agent_id: str = "default",
     redline_tags: Optional[list[str]] = None,
+    repeat: Optional[str] = None,
 ) -> dict[str, Any]:
     """Register a long task, decomposed into ordered steps, and schedule its first
     wake (the safety net if this session stalls).
@@ -47,6 +48,8 @@ async def task_create(
     shell command the woken session runs to check progress deterministically
     (e.g. "tail -50 ~/train.log | grep -c 'epoch 100'"). est_seconds drives the
     wake interval; pass 0 to let the server calibrate from history.
+    repeat: 循环任务(非空则永不终态 DONE,验完重置回第 0 步)。形式:
+      "every:6h" / "every:1d" / "daily:09:00" / 纯秒数;None=一次性任务。
     """
     try:
         if not title or not title.strip():
@@ -57,7 +60,7 @@ async def task_create(
             svc = TaskService(session)
             task = await svc.register(
                 user_id=user_id, agent_id=agent_id, title=title, goal=goal,
-                steps=steps, redline_tags=redline_tags,
+                steps=steps, redline_tags=redline_tags, repeat=repeat,
             )
             await session.commit()
             return _ok(task=task)

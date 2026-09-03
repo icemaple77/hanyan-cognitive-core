@@ -237,11 +237,23 @@ class ContextBuilder:
             ),
         }
 
+        # 价值坐标(读路 join,§五):公子的 registry,读时现算——保送席 + 锚词加成。
+        # 绝不改 memories;取不到就退化成纯相关性(不挡注入)。
+        priorities: list[dict[str, Any]] = []
+        try:
+            from gateway.core.database import async_session
+            from gateway.services.priority_service import PriorityService
+            async with async_session() as psession:
+                priorities = await PriorityService(psession).active_for_read(user_id=user_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("priority fetch failed; injection falls back to relevance-only", exc_info=True)
+
         context_text = self._render_context(
             memory_items=memory_items,
             knowledge_items=knowledge_result.items,
             emotion_state=emotion_state,
             memory_limit=limit,
+            priorities=priorities,
         )
 
         return {
@@ -319,33 +331,92 @@ class ContextBuilder:
         knowledge_items: list[dict[str, Any]],
         emotion_state: dict[str, Any] | None,
         memory_limit: int = 10,
+        priorities: list[dict[str, Any]] | None = None,
     ) -> str:
-        """Render the retrieved items into a readable context block."""
+        """Render the retrieved items into a readable context block.
+
+        ``priorities`` 是 Priority Compass 读路 join 用的价值坐标(active、α>0),
+        每条带 ``anchors`` / ``quadrant`` / ``alpha``。用法(§五 + Claude Code 会诊):
+        - **保送席**:Q1 主题命中的记忆,在头部占至多 3 席,不参与相关性内卷、也
+          绕开碎片配额;但**相关性地板 = 必须在检索池里**——池里没有就空着,绝不硬凑。
+        - 其余按"蒸馏优先 + 碎片限 1/3"分层(见下)。
+        """
         blocks: list[str] = []
+        priorities = priorities or []
 
         headlines: list[str] = []
         seen: set[str] = set()
-        # harvester 原始对话碎片限量:蒸馏记忆优先占注入预算(公子 09-03 令:注入要干净)。
-        fragment_cap = max(memory_limit // 2, 3)
-        fragments = 0
-        for item in memory_items:
+
+        def _dedup_key(h: str) -> str:
+            # 同指纹/同 summary 前 80 字视作同一条:尾部微异的重复只留一条(公子 09-03)。
+            return h.casefold().strip()[:80]
+
+        def _add(item: dict[str, Any]) -> bool:
+            """取干净 headline、去重后加入注入;成功返回 True。"""
             headline = _headline(item)
             if headline is None:
-                continue
-            # Drop near-identical bullets (case/space-insensitive) — the same
-            # digest is often stored several times with trivial variation.
-            key = headline.casefold().strip()
+                return False
+            key = _dedup_key(headline)
             if key in seen:
-                continue
-            is_fragment = str(item.get("source") or "").startswith("harvester")
-            if is_fragment and fragments >= fragment_cap:
-                continue
+                return False
             seen.add(key)
             headlines.append(headline)
-            if is_fragment:
-                fragments += 1
+            return True
+
+        # Q1(重要且紧急)主题锚词:保送席按这些命中拉人。
+        q1_anchors = [
+            str(a).casefold()
+            for p in priorities if p.get("quadrant") == "Q1"
+            for a in (p.get("anchors") or []) if str(a).strip()
+        ]
+
+        def _hits(item: dict[str, Any], anchors_lower: list[str]) -> bool:
+            if not anchors_lower:
+                return False
+            hay = " ".join([
+                str(item.get("summary") or ""),
+                str(item.get("content") or ""),
+                " ".join(item["tags"]) if isinstance(item.get("tags"), list) else str(item.get("tags") or ""),
+            ]).casefold()
+            return any(a in hay for a in anchors_lower)
+
+        # 第 0 层 · 保送席:Q1 主题命中的记忆占头部至多 3 席(池里有才占,没有则空)。
+        # 保送席绕开碎片配额——养伤这种 Q1 事,哪怕库里只有对话碎片,也该顶上来。
+        reserved = 0
+        RESERVED_CAP = 3
+        if q1_anchors:
+            for item in memory_items:
+                if reserved >= RESERVED_CAP or len(headlines) >= memory_limit:
+                    break
+                if _hits(item, q1_anchors) and _add(item):
+                    reserved += 1
+
+        # 注入配额分层(公子 09-03 令:注入要干净、要分层):
+        #   蒸馏记忆(有 summary 的 knowledge/decision 等)先占剩余预算;harvester 原始
+        #   对话碎片降权限量——最多占 1/3,且排在蒸馏之后。碎片截半句、上下文全丢,能命中
+        #   却没信息量,该在 memory_search 深挖时出场,不该霸占每轮系统注入位。
+        distilled: list[dict[str, Any]] = []
+        fragments_src: list[dict[str, Any]] = []
+        for item in memory_items:
+            if str(item.get("source") or "").startswith("harvester"):
+                fragments_src.append(item)
+            else:
+                distilled.append(item)
+
+        # 第一层:蒸馏记忆优先占位。
+        for item in distilled:
             if len(headlines) >= memory_limit:
                 break
+            _add(item)
+
+        # 第二层:harvester 碎片补位,至多 1/3、且不超总预算。
+        fragment_cap = max(memory_limit // 3, 1)
+        fragments = 0
+        for item in fragments_src:
+            if len(headlines) >= memory_limit or fragments >= fragment_cap:
+                break
+            if _add(item):
+                fragments += 1
 
         if headlines:
             lines = ["## Relevant Memories"]
@@ -360,7 +431,7 @@ class ContextBuilder:
                 heading = (item.get("heading") or item.get("id") or "").strip()
                 if not heading:
                     continue
-                kkey = heading.casefold().strip()
+                kkey = heading.casefold().strip()[:80]
                 if kkey in kseen:
                     continue
                 kseen.add(kkey)

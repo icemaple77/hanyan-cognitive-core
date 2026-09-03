@@ -56,6 +56,7 @@ if _PROJECT_ROOT not in sys.path:
 
 import memory_tools  # noqa: E402
 import task_tools  # noqa: E402
+import priority_tools  # noqa: E402
 
 mcp = FastMCP("hcc-memory")
 
@@ -267,6 +268,7 @@ async def task_create(
     user_id: str = "michael",
     agent_id: str = "default",
     redline_tags: list[str] = None,
+    repeat: str = None,
 ) -> dict:
     """Register a long task so it survives session/compaction and gets driven to
     completion by external wakes instead of stalling after step one.
@@ -288,10 +290,11 @@ async def task_create(
         user_id: Owner.
         agent_id: Which agent owns/drives this task (hermes / openclaw / ...).
         redline_tags: Extra keywords that force human escalation for this task.
+        repeat: 循环任务(every:6h / daily:09:00 / 纯秒数);None=一次性。
     """
     return await task_tools.task_create(
         title=title, steps=steps or [], goal=goal,
-        user_id=user_id, agent_id=agent_id, redline_tags=redline_tags,
+        user_id=user_id, agent_id=agent_id, redline_tags=redline_tags, repeat=repeat,
     )
 
 
@@ -358,6 +361,48 @@ async def task_report(
 async def task_cancel(task_id: str) -> dict:
     """Cancel a task and stop all its future wakes."""
     return await task_tools.task_cancel(task_id=task_id)
+
+
+# ── Priority Compass:公子的价值坐标(重要性×紧急性,跨运行时共享)─────────────
+@mcp.tool()
+async def priority_set(
+    label: str,
+    importance: int = 3,
+    urgency: int = 3,
+    anchors: list[str] = None,
+    source: str = "agent",
+    trust: str = None,
+    review_at: str = None,
+    user_id: str = "michael",
+) -> dict:
+    """登记一条价值坐标(重要性×紧急性各 1-5)。公子说「最近 X 最要紧」时调这个。
+
+    agent 提案默认落 pending(半权隔离生效,不污染全局),需公子 priority_confirm
+    转正。anchors 是主题锚词(如 ["肩颈","养伤","复诊"]),读路命中即给相关记忆加成。
+    review_at(ISO 日期)过期 7 天未复核 α 自动减半。价值读时算,登记后无需回刷。
+    """
+    return await priority_tools.priority_set(
+        label=label, importance=importance, urgency=urgency, anchors=anchors,
+        source=source, trust=trust, review_at=review_at, user_id=user_id,
+    )
+
+
+@mcp.tool()
+async def priority_list(user_id: str = "michael", status: str = "active") -> dict:
+    """列出价值坐标(默认只列 active,带象限 Q1-Q4 与 α)。status=null 列全部。"""
+    return await priority_tools.priority_list(user_id=user_id, status=status)
+
+
+@mcp.tool()
+async def priority_confirm(priority_id: str) -> dict:
+    """把 pending 提案转正为 confirmed(全权重)。公子一句"转正"走这。"""
+    return await priority_tools.priority_confirm(priority_id=priority_id)
+
+
+@mcp.tool()
+async def priority_retire(priority_id: str, superseded_by: str = None) -> dict:
+    """退役一条价值坐标(不物删,记版本链)。事情办完/不再要紧时调。"""
+    return await priority_tools.priority_retire(priority_id=priority_id, superseded_by=superseded_by)
 
 
 def main() -> None:

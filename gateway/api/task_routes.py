@@ -35,6 +35,7 @@ class TaskCreateRequest(BaseModel):
     user_id: str = "michael"
     agent_id: str = "default"
     redline_tags: list[str] = Field(default_factory=list)
+    repeat: Optional[str] = None  # 循环任务:every:6h | daily:09:00 | 纯秒数;None=一次性
 
 
 class TaskReportRequest(BaseModel):
@@ -49,10 +50,14 @@ async def create_task(req: TaskCreateRequest, session: AsyncSession = Depends(ge
     if not req.steps:
         raise HTTPException(status_code=422, detail="a task needs at least one step")
     svc = TaskService(session)
-    task = await svc.register(
-        user_id=req.user_id, agent_id=req.agent_id, title=req.title, goal=req.goal,
-        steps=[s.model_dump() for s in req.steps], redline_tags=req.redline_tags,
-    )
+    try:
+        task = await svc.register(
+            user_id=req.user_id, agent_id=req.agent_id, title=req.title, goal=req.goal,
+            steps=[s.model_dump() for s in req.steps], redline_tags=req.redline_tags,
+            repeat=req.repeat,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     await session.commit()
     return {"task": task}
 

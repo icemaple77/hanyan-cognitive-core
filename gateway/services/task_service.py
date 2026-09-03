@@ -60,6 +60,32 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _next_fire(repeat: str, base: datetime) -> Optional[datetime]:
+    """循环任务下次触发时刻。无 croniter 依赖,支持三种形:
+      "every:<N>{s|m|h|d}"（如 every:6h、every:1d）· "daily:HH:MM" · 纯秒数。
+    无法解析返回 None(调用方退化成普通 DONE,不把循环任务卡死)。
+    """
+    r = (repeat or "").strip().lower()
+    if not r:
+        return None
+    try:
+        if r.startswith("every:"):
+            spec = r[6:]
+            unit = spec[-1]
+            if unit in "smhd":
+                n, mult = int(spec[:-1]), {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+            else:
+                n, mult = int(spec), 1
+            return base + timedelta(seconds=max(1, n) * mult)
+        if r.startswith("daily:"):
+            hh, mm = r[6:].split(":")
+            target = base.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+            return target + timedelta(days=1) if target <= base else target
+        return base + timedelta(seconds=max(1, int(r)))
+    except (ValueError, IndexError, KeyError):
+        return None
+
+
 def _clamp_wake(seconds: float) -> int:
     return int(max(MIN_WAKE_SECONDS, min(MAX_WAKE_SECONDS, seconds)))
 
@@ -81,6 +107,7 @@ def _task_to_dict(t: Task, steps: Optional[list[TaskStep]] = None) -> dict[str, 
         "next_wake_at": t.next_wake_at.isoformat() if t.next_wake_at else None,
         "last_heartbeat": t.last_heartbeat.isoformat() if t.last_heartbeat else None,
         "note": t.note or "",
+        "repeat": t.repeat,
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
     }
@@ -126,18 +153,25 @@ class TaskService:
     async def register(
         self, *, user_id: str, agent_id: str, title: str, goal: str,
         steps: list[dict[str, Any]], redline_tags: Optional[list[str]] = None,
+        repeat: Optional[str] = None,
     ) -> dict[str, Any]:
         """Create a task + its ordered steps and schedule the first wake.
 
         The registering session is the one about to do step 0 right now; the
         first wake is the *safety net* that fires if it stalls before reporting.
+
+        ``repeat`` 非空 → 循环任务:全步验完不终态 DONE,而是重置回第 0 步、推到下次
+        触发时刻(见 :func:`_next_fire`)。复用整套状态机,不新起调度系统。
         """
         if not steps:
             raise ValueError("a task needs at least one step")
+        if repeat and _next_fire(repeat, _now()) is None:
+            raise ValueError(f"无法解析 repeat={repeat!r}(用 every:6h / daily:09:00 / 纯秒数)")
         task = Task(
             user_id=user_id, agent_id=agent_id, title=title, goal=goal or "",
             status=TaskStatus.RUNNING.value, current_step=0,
             redline_tags=list(redline_tags or []), attempts_on_current=0,
+            repeat=repeat or None,
         )
         self.session.add(task)
         await self.session.flush()  # assign task.id
@@ -263,6 +297,28 @@ class TaskService:
             ),
         }
 
+    def _rearm_repeat(self, task: Task, steps: list[TaskStep]) -> bool:
+        """循环任务:全步验完后重置回第 0 步、推到下次触发时刻。成功返回 True。
+
+        不新建调度系统——复用同一状态机:重置即"新一轮",租约/退避/红线/attempt 上限
+        全套照旧生效。repeat 解析失败则返回 False,调用方按普通 DONE 收尾(不卡死)。
+        """
+        if not task.repeat:
+            return False
+        fire = _next_fire(task.repeat, _now())
+        if fire is None:
+            logger.warning("task %s repeat=%r 无法解析,按普通 DONE 收尾", task.id, task.repeat)
+            return False
+        for s in steps:
+            s.status = StepStatus.PENDING.value
+            s.attempts = 0
+        steps[0].status = StepStatus.RUNNING.value
+        task.current_step = 0
+        task.attempts_on_current = 0
+        task.status = TaskStatus.RUNNING.value
+        task.next_wake_at = fire
+        return True
+
     # ------------------------------------------------------------------
     async def report(
         self, *, task_id: str, step_idx: int, verified_done: bool,
@@ -300,6 +356,11 @@ class TaskService:
         task.attempts_on_current = 0
         task.current_step += 1
         if task.current_step >= len(steps):
+            if self._rearm_repeat(task, steps):
+                await self.session.flush()
+                return {"task_id": task_id, "status": task.status, "action": "repeat_rearmed",
+                        "repeat": task.repeat, "next_wake_at": task.next_wake_at.isoformat(),
+                        "reason": "all steps complete → 循环重置回第 0 步"}
             task.status = TaskStatus.DONE.value
             task.next_wake_at = None
             await self.session.flush()

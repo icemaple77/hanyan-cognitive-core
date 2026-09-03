@@ -275,6 +275,11 @@ class Task(Base):
     last_heartbeat = Column(DateTime, nullable=True)
     next_wake_at = Column(DateTime, nullable=True, index=True)        # cron scans WHERE next_wake_at <= now
     note = Column(Text, default="")           # last progress note / block reason
+    # 循环任务(公子 09-03:「循环定时任务也是任务」)。非空则任务永不终态 DONE:
+    # 全步验完后重置回第 0 步、status=running、next_wake_at 推到下次触发时刻。
+    # 复用整套机制(租约/退避/红线/attempt 上限),不新起调度系统。格式见
+    # task_service._next_fire:"every:<N>{s|m|h|d}" | "daily:HH:MM" | 纯秒数。
+    repeat = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
@@ -315,4 +320,54 @@ class TaskStep(Base):
     __table_args__ = (
         UniqueConstraint("task_id", "idx", name="uq_task_steps_task_idx"),
         Index("ix_task_steps_task_id_idx", "task_id", "idx"),
+    )
+
+
+class PriorityStatus(StrEnum):
+    """Lifecycle of a :class:`Priority` row (never physically deleted)."""
+
+    ACTIVE = "active"           # 当前生效
+    SUPERSEDED = "superseded"   # 被新版本取代(superseded_by 指向新行)
+    EXPIRED = "expired"         # review_at 过期且已降级归档
+
+
+class PriorityTrust(StrEnum):
+    """信任级别 —— 门槛 B(隔离生效):pending 先半权重,公子确认后转正全权重。"""
+
+    CONFIRMED = "confirmed"     # 公子显式确认 → 全权重
+    PENDING = "pending"         # agent 提案 → 确认前半权重(压不动紧急、也不污染全局)
+
+
+class Priority(Base):
+    """公子的『价值坐标』:一条"现在什么重要/急"的一等公民条目(跨运行时共享)。
+
+    设计见 docs/priority-compass-design.md。核心铁律:**价值读时算,绝不落进
+    memories.importance**。每条记忆的有效重要性 = 记忆 × 本表 的 join,在
+    context_builder 读路现算;改一行本表 → 全库权重瞬间刷新,无回刷、无重判。
+
+    象限(不落列,读时派生):imp≥4∧urg≥4→Q1;imp≥4→Q2;urg≥4→Q3;else Q4。
+    """
+
+    __tablename__ = "priorities"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(128), index=True, nullable=False, default="michael")
+    label = Column(Text, nullable=False)                       # 「肩颈损伤恢复」
+    anchors = Column(JSON, default=list)                       # 主题锚词(加速 join,读路用)
+    importance = Column(Integer, default=3, nullable=False)    # 1-5
+    urgency = Column(Integer, default=3, nullable=False)       # 1-5
+    source = Column(String(64), default="gongzi")              # gongzi | agent:<name>
+    trust = Column(String(16), default=PriorityTrust.CONFIRMED.value)
+    status = Column(String(16), default=PriorityStatus.ACTIVE.value, index=True)
+    review_at = Column(Date, nullable=True)                    # 复核日:过期 7 天未复核 → α 减半
+    superseded_by = Column(String(36), nullable=True)          # 版本链,永不物删
+    embedding = Column(Vector(EMBEDDING_DIM), nullable=True)   # label 向量(预留 emb join)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    __table_args__ = (
+        CheckConstraint("importance BETWEEN 1 AND 5", name="ck_priorities_importance"),
+        CheckConstraint("urgency BETWEEN 1 AND 5", name="ck_priorities_urgency"),
+        CheckConstraint("status IN ('active','superseded','expired')", name="ck_priorities_status"),
+        CheckConstraint("trust IN ('confirmed','pending')", name="ck_priorities_trust"),
     )
