@@ -151,6 +151,18 @@ async def lifespan(app: FastAPI):
             await conn.execute(text(
                 f"CREATE INDEX IF NOT EXISTS ix_{_tbl}_embedding_model "
                 f"ON {_tbl} (embedding_model)"))
+        # 关键词搜索(/memory/search)走 content ILIKE '%q%' 前置通配符,用不上普通
+        # 索引 → 11.4k 行 Seq Scan,实测 745ms(且 count 再扫一遍)。pg_trgm 让它走
+        # Bitmap Index Scan:实测 4 字查询 765ms→7.5ms、6 字→0.15ms。
+        # 注意:trigram 需要 ≥3 字符,2 字中文词(如"含烟")仍会 Seq Scan——pg_trgm
+        # 的固有限制,不是配置问题。
+        # 写在这里而不是手工敲 SQL:2026-08-29 的向量事故正是"手工改库、无痕迹、
+        # 换机器/重建库就丢失"造成的,同样的坑不踩第二次。
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+        for _idx, _col in (("ix_memories_content_trgm", "content"),
+                           ("ix_memories_summary_trgm", "summary")):
+            await conn.execute(text(
+                f"CREATE INDEX IF NOT EXISTS {_idx} ON memories USING gin ({_col} gin_trgm_ops)"))
         # 向量维度自检:换模型漏迁移会让相关表的语义检索静默降级(2026-08-29 事故,
         # documents 死了 5 天没人知道)。不一致时大声报错并挂到 /health,但不拒绝
         # 启动——HCC 不能挂,宁可响铃也不停机。见 gateway/core/vector_guard.py。
