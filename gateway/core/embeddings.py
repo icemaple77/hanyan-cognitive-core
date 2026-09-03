@@ -30,21 +30,25 @@ load_dotenv()
 
 __all__ = ["embed_text", "EMBEDDING_DIM"]
 
-# Configuration
-EMBEDDING_PROVIDER = os.getenv("HCC_EMBEDDING_PROVIDER", "hash")
-EMBEDDING_MODEL = os.getenv("HCC_EMBEDDING_MODEL", "BAAI/bge-m3")
-EMBEDDING_DIM = int(os.getenv("HCC_EMBEDDING_DIM", "1024"))
-OLLAMA_BASE_URL = os.getenv("HCC_OLLAMA_URL", "http://localhost:11434")
+# Configuration —— 全部来自单一配置源 core_settings(2026-09-03 配置单一化)。
+# 曾经这里各自 os.getenv,与 gateway/models 的硬编码维度分道扬镳,酿成向量维度
+# 不符、文档语义检索静默全灭。现在建表维度与产出维度是同一个字段。
+from core.config import core_settings  # noqa: E402
+
+EMBEDDING_PROVIDER = core_settings.embedding_provider
+EMBEDDING_MODEL = core_settings.embedding_model
+EMBEDDING_DIM = core_settings.embedding_dim
+OLLAMA_BASE_URL = core_settings.ollama_url
 # BGE-family models want an asymmetric query instruction prepended to *queries*
 # only (not to stored passages) for retrieval. Empty by default → no-op for
 # ollama/hash and for symmetric models. For bge-*-zh set it to
 # "为这个句子生成表示以用于检索相关文章：" in .env.
-EMBEDDING_QUERY_INSTRUCTION = os.getenv("HCC_EMBEDDING_QUERY_INSTRUCTION", "")
+EMBEDDING_QUERY_INSTRUCTION = core_settings.embedding_query_instruction
 # Pin sentence-transformers to CPU: the embedder sits on the memory hot path and
 # must run *concurrently* with the brain's Metal generation. On CPU it runs truly
 # parallel (no GPU contention → no repeat of the 2026-08 concurrent-Metal kernel
 # panic, no Broker serialization latency). A 102M model embeds in ~14ms on CPU.
-EMBEDDING_DEVICE = os.getenv("HCC_EMBEDDING_DEVICE", "cpu")
+EMBEDDING_DEVICE = core_settings.embedding_device
 
 _TOKEN_RE = re.compile(r"\w+")
 

@@ -26,6 +26,42 @@ class CoreSettings(BaseSettings):
         extra="ignore",
     )
 
+    # --- Database / API 面(2026-09-03 由 gateway/core/config.py 合并进来)----
+    database_url: str = Field(
+        default="postgresql+asyncpg://hcc:hcc@localhost:5432/hcc",
+        description="Postgres/pgvector DSN (HCC_DATABASE_URL).",
+    )
+    api_host: str = Field(default="0.0.0.0", description="Gateway 监听地址。")
+    api_port: int = Field(default=8000, description="Gateway 监听端口。")
+    debug: bool = Field(default=False, description="调试模式。")
+
+    # --- Embedding:维度的唯一真相源 -------------------------------------
+    # 2026-09-03 事故复盘:此前维度有两个互不相干的定义——gateway/models 硬编码
+    # 1024 用于建表,gateway/core/embeddings.py 从 env 读(实际 768)用于产出向量。
+    # 结果 documents 列是 1024、查询向量是 768,**每次语义检索都报 "different
+    # vector dimensions",知识检索静默降级为纯 BM25**(公子抱怨的"Knowledge 全是
+    # 技术旧档"的根因)。维度只许有这一个定义,建表与产出共用。
+    # provider 默认值也从 "hash" 改为真实模型:hash 兜底会静默产生无意义向量,
+    # 宁可在 .env 缺失时用对的模型,也不要悄悄写垃圾进库。
+    embedding_provider: str = Field(
+        default="sentence-transformers",
+        description="嵌入后端:sentence-transformers | ollama | hash(仅测试)。",
+    )
+    embedding_model: str = Field(
+        default="BAAI/bge-base-zh-v1.5", description="嵌入模型 id。"
+    )
+    embedding_dim: int = Field(
+        default=768, ge=1,
+        description="嵌入维度。**建表与运行时共用此值**,不得在别处硬编码。",
+    )
+    embedding_device: str = Field(default="cpu", description="sentence-transformers 设备。")
+    embedding_query_instruction: str = Field(
+        default="", description="BGE 非对称检索的 query 前缀指令(store 侧不加)。"
+    )
+    ollama_url: str = Field(
+        default="http://localhost:11434", description="ollama 服务地址(HCC_OLLAMA_URL)。"
+    )
+
     # --- Redis working memory / event bus -------------------------------
     redis_url: str = Field(
         default="redis://localhost:6379/0",

@@ -10,9 +10,13 @@ from pgvector.sqlalchemy import Vector
 from gateway.core.database import Base
 from gateway.core.fts import build_search_text, tokenize_for_fts
 
-# Dimensionality of the stored embeddings. Keep in sync with HCC_EMBEDDING_DIM
-# (gateway.core.embeddings) and whatever HCC_EMBEDDING_MODEL actually produces.
-EMBEDDING_DIM = 1024  # qwen3-embedding:0.6b 原生维度(2026-08 从 nomic-embed-text/768 迁移,见 memories/documents 列迁移记录)
+# 建表用的向量维度 —— **从单一配置源读,禁止在此硬编码**。
+# 2026-09-03 事故:这里曾硬编码 1024 而运行时实际产出 768(.env),导致 documents
+# 列 1024/查询 768,语义检索每次报 "different vector dimensions"、知识召回静默
+# 降级成纯 BM25。建表维度与产出维度自此共用 core_settings.embedding_dim。
+from core.config import core_settings  # noqa: E402
+
+EMBEDDING_DIM = core_settings.embedding_dim
 
 
 class MemoryStatus(StrEnum):
