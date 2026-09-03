@@ -325,6 +325,9 @@ class ContextBuilder:
 
         headlines: list[str] = []
         seen: set[str] = set()
+        # harvester 原始对话碎片限量:蒸馏记忆优先占注入预算(公子 09-03 令:注入要干净)。
+        fragment_cap = max(memory_limit // 2, 3)
+        fragments = 0
         for item in memory_items:
             headline = _headline(item)
             if headline is None:
@@ -334,8 +337,13 @@ class ContextBuilder:
             key = headline.casefold().strip()
             if key in seen:
                 continue
+            is_fragment = str(item.get("source") or "").startswith("harvester")
+            if is_fragment and fragments >= fragment_cap:
+                continue
             seen.add(key)
             headlines.append(headline)
+            if is_fragment:
+                fragments += 1
             if len(headlines) >= memory_limit:
                 break
 
@@ -346,10 +354,21 @@ class ContextBuilder:
 
         if knowledge_items:
             lines = ["## Knowledge"]
+            # 同一事实常被 qmd 切成多块/多篇重复记录 → 渲染层按指纹去重+限量(公子 09-03:BEES×5 病灶)
+            kseen: set[str] = set()
             for item in knowledge_items:
                 heading = (item.get("heading") or item.get("id") or "").strip()
+                if not heading:
+                    continue
+                kkey = heading.casefold().strip()
+                if kkey in kseen:
+                    continue
+                kseen.add(kkey)
                 lines.append(f"- {heading}".rstrip())
-            blocks.append("\n".join(lines))
+                if len(kseen) >= 10:
+                    break
+            if len(lines) > 1:
+                blocks.append("\n".join(lines))
 
         if emotion_state:
             mood = (
