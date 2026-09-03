@@ -29,6 +29,7 @@ import logging
 import re
 from typing import Any, Awaitable, Callable
 
+from core.config import core_settings
 from core.managers.knowledge_manager import KnowledgeManager
 from core.managers.memory_manager import MemoryManager
 from core.providers.base import SearchQuery
@@ -409,8 +410,11 @@ class ContextBuilder:
                 break
             _add(item)
 
-        # 第二层:harvester 碎片补位,至多 1/3、且不超总预算。
-        fragment_cap = max(memory_limit // 3, 1)
+        # 第二层:harvester 碎片补位(仅当蒸馏填不满时兜底)。默认配额 0 ——
+        # 收割来的原始对话是"深挖检索池",不是每轮系统注入的候选(公子 09-03:该在
+        # memory_search 深挖时出场,不霸占每轮注入位)。保送席是唯一例外,不受此限。
+        # 手感太薄可设 HCC_INJECT_FRAGMENT_CAP=3 放宽。
+        fragment_cap = core_settings.inject_fragment_cap
         fragments = 0
         for item in fragments_src:
             if len(headlines) >= memory_limit or fragments >= fragment_cap:

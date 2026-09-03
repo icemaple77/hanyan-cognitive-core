@@ -58,6 +58,8 @@ import memory_tools  # noqa: E402
 import task_tools  # noqa: E402
 import priority_tools  # noqa: E402
 
+from core.config import core_settings  # noqa: E402  单一配置源(2026-09-03)
+
 mcp = FastMCP("hcc-memory")
 
 # P3-3: 三方共享记忆的 agent_id 规范 —— openclaw 用 "openclaw"(插件侧
@@ -67,7 +69,7 @@ mcp = FastMCP("hcc-memory")
 # claude-code 名下,三方就对不上号。这里改成读环境变量,由 MCP 客户端配置
 # (~/.claude.json 的 mcpServers.hcc.env.HCC_AGENT_ID)按运行时身份注入,不用
 # 依赖模型每次记得传参。
-_DEFAULT_AGENT_ID = os.environ.get("HCC_AGENT_ID", "default")
+_DEFAULT_AGENT_ID = core_settings.agent_id
 
 
 @mcp.tool()

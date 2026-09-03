@@ -62,6 +62,39 @@ class CoreSettings(BaseSettings):
         default="http://localhost:11434", description="ollama 服务地址(HCC_OLLAMA_URL)。"
     )
 
+    # --- Rerank(可选重排,默认关)-----------------------------------------
+    rerank_enabled: bool = Field(default=False, description="是否启用 GGUF 重排。")
+    rerank_model_path: Path = Field(
+        default=Path("~/.cache/qmd/models/hf_ggml-org_qwen3-reranker-0.6b-q8_0.gguf").expanduser(),
+        description="重排模型 GGUF 路径。",
+    )
+    rerank_n_ctx: int = Field(default=2048, ge=1, description="重排模型上下文长度。")
+
+    # --- Session Harvester(各 runtime 会话收割)---------------------------
+    harvester_enabled: bool = Field(default=True, description="是否开启会话收割循环。")
+    harvest_interval: int = Field(default=60, ge=1, description="收割周期(秒)。")
+    harvest_user_id: str = Field(default="michael", description="收割入库归属 user_id。")
+    harvest_state: Path = Field(
+        default=Path.home() / ".hcc" / "harvester_state.json",
+        description="收割水位持久化路径。",
+    )
+    self_url: str = Field(
+        default="http://127.0.0.1:8000/api/v1",
+        description="进程内回调自身 API 的地址(收割器入库用)。",
+    )
+
+    # --- 注入(读路渲染)---------------------------------------------------
+    inject_fragment_cap: int = Field(
+        default=0, ge=0,
+        description=(
+            "每轮系统注入里允许的 harvester 原始对话碎片条数上限。默认 0——碎片是"
+            "深挖检索池,不该霸占每轮注入位(保送席不受此限)。手感太薄可调到 3。"
+        ),
+    )
+
+    # --- Agent 身份 -------------------------------------------------------
+    agent_id: str = Field(default="default", description="本进程默认 agent_id(MCP 等)。")
+
     # --- Redis working memory / event bus -------------------------------
     redis_url: str = Field(
         default="redis://localhost:6379/0",

@@ -10,9 +10,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-# Must run before any HCC module import — several modules (gateway.core.embeddings
-# in particular) read os.getenv() directly rather than through pydantic Settings'
-# own env_file parsing, so without this they silently ignore .env entirely.
+# 保留 load_dotenv():配置已统一到 core.config(pydantic Settings 自带 env_file),
+# 但把 .env 灌进真实环境仍有用——独立脚本 / MCP 子进程 / 第三方库仍按 env 读。
 load_dotenv()
 
 from core.config import core_settings
@@ -119,11 +118,9 @@ async def _harvester_loop() -> None:
     最早的设计(docs/03「拉取全部对话」),把 08-26 漂成插件打包的记忆链路拉回来。
     见 core/session_harvester.py。异常吞掉保活。
     """
-    import os as _os
-
     from core.session_harvester import SessionHarvester
 
-    interval = int(_os.environ.get("HCC_HARVEST_INTERVAL", "60"))
+    interval = core_settings.harvest_interval
     harvester = SessionHarvester()
     logger.info("session harvester started (interval=%ss)", interval)
     while True:
@@ -173,8 +170,7 @@ async def lifespan(app: FastAPI):
         )
 
     harvest_task: asyncio.Task | None = None
-    import os as _os
-    if _os.environ.get("HCC_HARVESTER_ENABLED", "1") == "1":
+    if core_settings.harvester_enabled:
         harvest_task = asyncio.create_task(_harvester_loop())
 
     yield

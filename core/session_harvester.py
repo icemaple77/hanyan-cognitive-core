@@ -24,10 +24,11 @@ from pathlib import Path
 import httpx
 
 logger = logging.getLogger("hcc.harvester")
+from core.config import core_settings  # 单一配置源(2026-09-03)
 
-USER_ID = os.environ.get("HCC_HARVEST_USER_ID", "michael")
-HCC_BASE = os.environ.get("HCC_SELF_URL", "http://127.0.0.1:8000/api/v1")
-STATE_PATH = Path(os.environ.get("HCC_HARVEST_STATE", str(Path.home() / ".hcc" / "harvester_state.json")))
+USER_ID = core_settings.harvest_user_id
+HCC_BASE = core_settings.self_url
+STATE_PATH = Path(core_settings.harvest_state)
 MAX_TEXT = 8000  # 单条消息入库上限(极长的截断,防个别巨消息)
 
 

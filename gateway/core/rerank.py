@@ -30,13 +30,11 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 __all__ = ["RERANK_ENABLED", "is_available", "rerank"]
+from core.config import core_settings  # 单一配置源(2026-09-03)
 
-RERANK_ENABLED = os.getenv("HCC_RERANK_ENABLED", "false").lower() in ("1", "true", "yes")
-RERANK_MODEL_PATH = os.getenv(
-    "HCC_RERANK_MODEL_PATH",
-    os.path.expanduser("~/.cache/qmd/models/hf_ggml-org_qwen3-reranker-0.6b-q8_0.gguf"),
-)
-RERANK_N_CTX = int(os.getenv("HCC_RERANK_N_CTX", "2048"))
+RERANK_ENABLED = core_settings.rerank_enabled
+RERANK_MODEL_PATH = str(core_settings.rerank_model_path)
+RERANK_N_CTX = core_settings.rerank_n_ctx
 
 _llm_cache: dict = {}
 _load_lock = asyncio.Lock()
