@@ -39,7 +39,7 @@ from core.providers.base import (
     UpdateData,
 )
 from gateway.core.database import async_session
-from gateway.core.embeddings import embed_text
+from gateway.core.embeddings import embed_text, memory_embedding_text
 from gateway.models import Memory, MemoryStatus
 from gateway.services import MemoryService
 
@@ -188,7 +188,7 @@ class MemoryProvider(Provider):
         failure (rather than poisoning the column with a hash vector), this
         guard is what stops that from hard-failing the store.
         """
-        text = f"{data.content}\n{data.summary or ''}".strip()
+        text = memory_embedding_text(data.content, data.summary)
         try:
             embedding = await asyncio.to_thread(embed_text, text)
         except Exception:
@@ -250,7 +250,7 @@ class MemoryProvider(Provider):
             # or hard-failing the update (see store() for the full rationale).
             if data.content is not None:
                 memory.content = data.content
-                text = f"{memory.content}\n{memory.summary or ''}".strip()
+                text = memory_embedding_text(memory.content, memory.summary)
                 try:
                     memory.embedding = await asyncio.to_thread(embed_text, text)
                 except Exception:

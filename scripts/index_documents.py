@@ -131,7 +131,7 @@ async def index_collection(collection: str, root: Path, *, embed: bool, embed_wa
 
                 embedding = None
                 if embed:
-                    from gateway.core.embeddings import embed_text, EMBEDDING_PROVIDER
+                    from gateway.core.embeddings import embed_text, document_embedding_text, EMBEDDING_PROVIDER
 
                     if EMBEDDING_PROVIDER == "hash":
                         if not embed_warned[0]:
@@ -141,7 +141,7 @@ async def index_collection(collection: str, root: Path, *, embed: bool, embed_wa
                             )
                             embed_warned[0] = True
                     else:
-                        embedding = embed_text(f"{doc.title}\n{doc.content}")
+                        embedding = embed_text(document_embedding_text(doc.title, doc.content))
 
                 _, was_changed = await service.upsert(
                     collection=collection,

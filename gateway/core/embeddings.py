@@ -48,6 +48,22 @@ EMBEDDING_QUERY_INSTRUCTION = core_settings.embedding_query_instruction
 # panic, no Broker serialization latency). A 102M model embeds in ~14ms on CPU.
 EMBEDDING_DEVICE = core_settings.embedding_device
 
+def memory_embedding_text(content: str | None, summary: str | None = "") -> str:
+    """一条记忆用于嵌入的**规范文本** —— 唯一定义,任何路径都必须走这里。
+
+    2026-09-03 查证:08-29 的全库重嵌入按 ``content`` 单独算,而线上写入路径按
+    ``content + summary`` 算,库里因此混着两套约定(重算余弦 0.92~0.99,不是空间
+    错乱但确实不一致)。约定散落在多处 f-string 里就一定会漂,所以收成一个函数:
+    写入、更新、重嵌入脚本共用,想改就只有这一处能改。
+    """
+    return f"{content or ''}\n{summary or ''}".strip()
+
+
+def document_embedding_text(title: str | None, content: str | None) -> str:
+    """一篇文档用于嵌入的规范文本(与 scripts/index_documents.py 的约定一致)。"""
+    return f"{title or ''}\n{content or ''}".strip()
+
+
 _TOKEN_RE = re.compile(r"\w+")
 
 # Cache for loaded model

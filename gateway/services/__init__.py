@@ -9,7 +9,7 @@ from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import core_settings
-from gateway.core.embeddings import embed_text
+from gateway.core.embeddings import embed_text, memory_embedding_text
 from gateway.core.events import publish_conflict_event
 from gateway.core.fts import tokenize_for_fts
 from gateway.core.rerank import RERANK_ENABLED, rerank as rerank_fn
@@ -49,7 +49,7 @@ class MemoryService:
         # callers that still pass it don't break.
         payload.pop("embedding", None)
         memory = Memory(**payload)
-        text = f"{memory.content}\n{memory.summary}".strip()
+        text = memory_embedding_text(memory.content, memory.summary)
         try:
             memory.embedding = await asyncio.to_thread(embed_text, text)
         except Exception:
