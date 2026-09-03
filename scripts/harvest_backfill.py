@@ -27,9 +27,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import httpx  # noqa: E402
+import httpx
 
-from core.session_harvester import (  # noqa: E402
+from core.session_harvester import (
     HCC_BASE,
     USER_ID,
     _parse_claude,

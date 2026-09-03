@@ -64,7 +64,7 @@ async def task_create(
             )
             await session.commit()
             return _ok(task=task)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")
 
 
@@ -76,7 +76,7 @@ async def task_get(task_id: str) -> dict[str, Any]:
             if task is None:
                 return _err(f"task not found: {task_id}")
             return _ok(task=task)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")
 
 
@@ -86,7 +86,7 @@ async def task_due(agent_id: Optional[str] = None, limit: int = 20) -> dict[str,
         async with async_session() as session:
             due = await TaskService(session).list_due(agent_id=agent_id, limit=limit)
             return _ok(count=len(due), tasks=due)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")
 
 
@@ -101,7 +101,7 @@ async def task_wake(task_id: str) -> dict[str, Any]:
             if "error" in payload:
                 return _err(payload["error"])
             return _ok(**payload)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")
 
 
@@ -125,7 +125,7 @@ async def task_report(
             if "error" in result:
                 return _err(result["error"])
             return _ok(**result)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")
 
 
@@ -136,5 +136,5 @@ async def task_cancel(task_id: str) -> dict[str, Any]:
             ok = await TaskService(session).cancel(task_id)
             await session.commit()
             return _ok(cancelled=ok, task_id=task_id) if ok else _err(f"task not found: {task_id}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")

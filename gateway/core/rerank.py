@@ -100,6 +100,6 @@ async def rerank(query: str, documents: list[str]) -> Optional[list[float]]:
     async with _load_lock:
         try:
             return await asyncio.to_thread(_score_all_sync, query, documents)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("rerank scoring failed, falling back to RRF-only ranking", exc_info=True)
             return None

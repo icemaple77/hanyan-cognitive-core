@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -91,7 +91,6 @@ class ForgetEngine:
         else:
             access_dt = created_dt
 
-        days_since_created = max(0.0, (now - created_dt).total_seconds() / 86400)
         days_since_access = max(0.0, (now - access_dt).total_seconds() / 86400)
 
         importance = memory.get("importance", 0.5)

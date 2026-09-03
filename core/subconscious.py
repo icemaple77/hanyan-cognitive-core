@@ -11,7 +11,6 @@ When queried, all three layers are searched and merged with RRF scoring.
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any

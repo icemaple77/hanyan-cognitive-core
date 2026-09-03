@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path.home() / "workspace/projects/HCC"))
-from core import session_harvester as sh  # noqa: E402
+from core import session_harvester as sh
 
 DB = "/tmp/canary-slim.sqlite"
 STATE = Path("/tmp/test_harvester_state.json")

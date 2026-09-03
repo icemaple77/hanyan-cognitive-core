@@ -55,7 +55,7 @@ async def priority_set(
             return _ok(priority=p)
     except ValueError as e:
         return _err(str(e))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return _err(f"{type(e).__name__}: {e}")
 
 
@@ -65,7 +65,7 @@ async def priority_list(user_id: str = "michael", status: Optional[str] = "activ
         async with async_session() as session:
             svc = PriorityService(session)
             return _ok(priorities=await svc.list(user_id=user_id, status=status))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return _err(f"{type(e).__name__}: {e}")
 
 
@@ -79,7 +79,7 @@ async def priority_confirm(priority_id: str) -> dict[str, Any]:
                 return _err("priority not found")
             await session.commit()
             return _ok(priority=p)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return _err(f"{type(e).__name__}: {e}")
 
 
@@ -93,5 +93,5 @@ async def priority_retire(priority_id: str, superseded_by: Optional[str] = None)
                 return _err("priority not found")
             await session.commit()
             return _ok(priority=p)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return _err(f"{type(e).__name__}: {e}")

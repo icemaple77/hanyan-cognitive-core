@@ -348,7 +348,7 @@ class KnowledgeQMDProvider(Provider):
             # Root need not exist yet (empty KB); only fail on real IO errors.
             if self.root.exists():
                 _ = list(self.root.iterdir())
-        except OSError:  # noqa: BLE001
+        except OSError:
             logger.exception("KnowledgeQMDProvider health check failed")
             healthy = False
         latency_ms = (time.perf_counter() - start) * 1000.0

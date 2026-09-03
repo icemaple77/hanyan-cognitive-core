@@ -25,9 +25,11 @@ so :meth:`build` accepts an injected ``emotion_provider`` callable and returns
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-from typing import Any, Awaitable, Callable
+from typing import Any
+from collections.abc import Awaitable, Callable
 
 from core.config import core_settings
 from core.managers.knowledge_manager import KnowledgeManager
@@ -246,7 +248,7 @@ class ContextBuilder:
             from gateway.services.priority_service import PriorityService
             async with async_session() as psession:
                 priorities = await PriorityService(psession).active_for_read(user_id=user_id)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("priority fetch failed; injection falls back to relevance-only", exc_info=True)
 
         context_text = self._render_context(
@@ -276,7 +278,7 @@ class ContextBuilder:
         """
         try:
             aliases = core_settings.identity_aliases.get(user_id, [])
-        except Exception:  # noqa: BLE001 — never let config shape break retrieval
+        except Exception:
             aliases = []
         ordered = [user_id, *(a for a in aliases if a != user_id)]
         seen: set[str] = set()
@@ -321,7 +323,7 @@ class ContextBuilder:
             if hasattr(result, "__await__"):
                 result = await result  # type: ignore[assignment]
             return result  # type: ignore[return-value]
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("Emotion provider failed", exc_info=True)
             return None
 

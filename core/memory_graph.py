@@ -22,7 +22,6 @@ signal without adding a new stored column or an LLM call per memory.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Optional
 
 from sqlalchemy import Integer, and_, func, select

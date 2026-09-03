@@ -228,7 +228,7 @@ class DreamEngine:
             if na == 0.0 or nb == 0.0:
                 return None
             return float(np.dot(va, vb) / (na * nb))
-        except Exception:  # noqa: BLE001 - malformed/missing vector must not crash a run
+        except Exception:
             return None
 
     def _dedupe_by_embedding(self, memories: list[Memory], *, threshold: float) -> list[Memory]:
@@ -701,7 +701,7 @@ class DreamEngine:
                 snapshot_row.dominant_trigger = emotion_adjustment.get("dominant_trigger")
                 if existing_snapshot is None:
                     session.add(snapshot_row)
-            except Exception:  # noqa: BLE001 - snapshot failure must not roll back promotions
+            except Exception:
                 logger.exception("emotion snapshot write failed; deep promotions still committed")
 
             narrative_path: Path | None = None
@@ -726,7 +726,7 @@ class DreamEngine:
                     stats=stats,
                     diary_dir=diary_dir,
                 )
-            except Exception:  # noqa: BLE001 - narrative failure must not roll back promotions
+            except Exception:
                 logger.exception("dream narrative generation failed; deep promotions still committed")
 
             finished = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -754,7 +754,7 @@ class DreamEngine:
                 },
                 source="dream_engine",
             )
-        except Exception:  # noqa: BLE001 - event publish is best-effort
+        except Exception:
             logger.exception("failed to publish DreamFinished event")
 
         return stats

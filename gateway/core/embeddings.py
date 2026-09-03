@@ -13,8 +13,6 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-import os
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -33,7 +31,7 @@ __all__ = ["embed_text", "EMBEDDING_DIM"]
 # Configuration —— 全部来自单一配置源 core_settings(2026-09-03 配置单一化)。
 # 曾经这里各自 os.getenv,与 gateway/models 的硬编码维度分道扬镳,酿成向量维度
 # 不符、文档语义检索静默全灭。现在建表维度与产出维度是同一个字段。
-from core.config import core_settings  # noqa: E402
+from core.config import core_settings
 
 EMBEDDING_PROVIDER = core_settings.embedding_provider
 EMBEDDING_MODEL = core_settings.embedding_model

@@ -104,7 +104,7 @@ async def store_memory(
             await session.commit()
             await publish_memory_event("store", memory.id, user_id=memory.user_id)
             return _ok(memory=_serialize(memory))
-    except Exception as exc:  # noqa: BLE001 - surface any error as structured data
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")
 
 
@@ -123,7 +123,7 @@ async def search_memories(
             q = MemorySearch(query=query, user_id=user_id, agent_id=agent_id, type=type, limit=limit)
             memories, total = await service.search(q)
             return _ok(total=total, count=len(memories), results=[_serialize(m) for m in memories])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")
 
 
@@ -161,7 +161,7 @@ async def recall(
                  "memory_source": r.memory_source, "created_at": r.created_at}
                 for r in results
             ])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")
 
 
@@ -194,7 +194,7 @@ async def semantic_search(
                 item["score"] = round(1.0 - float(dist) / 2.0, 6)
                 items.append(item)
             return _ok(count=len(items), results=items)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")
 
 
@@ -228,7 +228,7 @@ async def hybrid_search(
                 serialized["rerank_score"] = item.get("rerank_score")
                 items.append(serialized)
             return _ok(count=len(items), results=items)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")
 
 
@@ -245,7 +245,7 @@ async def get_recent_memories(
             q = MemorySearch(query="", user_id=user_id, agent_id=agent_id, limit=limit)
             memories, total = await service.search(q)
             return _ok(total=total, count=len(memories), results=[_serialize(m) for m in memories])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")
 
 
@@ -262,7 +262,7 @@ async def delete_memory(memory_id: str) -> dict[str, Any]:
                 await publish_memory_event("delete", memory_id)
                 return _ok(deleted=True, memory_id=memory_id)
             return _err(f"memory not found: {memory_id}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")
 
 
@@ -273,5 +273,5 @@ async def evaluate(content: str, agent_id: str = "default", user_id: str = "defa
         decision = orchestrator.evaluate(content, "mcp", user_id)
         return _ok(should_store=decision.should_store, importance=decision.importance,
                   reason=decision.reason, suggested_tags=decision.suggested_tags)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return _err(f"{exc.__class__.__name__}: {exc}")

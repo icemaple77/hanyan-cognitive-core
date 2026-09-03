@@ -298,7 +298,7 @@ class MemoryProvider(Provider):
         try:
             async with self._session_factory() as session:
                 await session.execute(text("SELECT 1"))
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("MemoryProvider health check failed")
             healthy = False
         latency_ms = (time.perf_counter() - start) * 1000.0

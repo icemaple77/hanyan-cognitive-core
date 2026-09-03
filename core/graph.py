@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import Column, String, Float, DateTime, Text, JSON, select, delete
+from sqlalchemy import Column, String, Float, DateTime, Text, JSON, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.database import Base

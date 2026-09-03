@@ -664,7 +664,7 @@ class EmotionEngine:
                 self._last_update = datetime.fromisoformat(last_update)
             logger.info("emotion state restored from redis (last_update=%s)", self._last_update.isoformat())
             return True
-        except Exception:  # noqa: BLE001 - a Redis hiccup must not block startup
+        except Exception:
             logger.warning("failed to load emotion state from redis", exc_info=True)
             return False
 
@@ -681,7 +681,7 @@ class EmotionEngine:
                     {"state": self._state, "baseline": self._baseline, "last_update": self._last_update.isoformat()},
                     category="emotion",
                 )
-        except Exception:  # noqa: BLE001 - persistence is best-effort
+        except Exception:
             logger.warning("failed to persist emotion state to redis", exc_info=True)
 
     async def _fetch_neural_offsets(self, text: str) -> dict[str, float] | None:
@@ -703,7 +703,7 @@ class EmotionEngine:
             if not isinstance(dims, dict):
                 return None
             return {k: float(v) for k, v in dims.items() if k in DEFAULT_STATE}
-        except Exception:  # noqa: BLE001 - a soul-service hiccup must not break emotion updates
+        except Exception:
             logger.warning("soul neural perception unreachable, falling back to keyword triggers", exc_info=True)
             return None
 

@@ -52,9 +52,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scanner.parser import parse_file, parse_pdf_file, PdfSkipped  # noqa: E402
-from gateway.core.database import async_session  # noqa: E402
-from gateway.services.document_service import DocumentService  # noqa: E402
+from scanner.parser import parse_file, parse_pdf_file, PdfSkipped
+from gateway.core.database import async_session
+from gateway.services.document_service import DocumentService
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("hcc.index_documents")
@@ -156,7 +156,7 @@ async def index_collection(collection: str, root: Path, *, embed: bool, embed_wa
                     changed += 1
                 else:
                     skipped += 1
-            except Exception:  # noqa: BLE001 - one bad file must not abort the run
+            except Exception:
                 errors += 1
                 logger.exception("[%s] failed to index %s", collection, path)
 

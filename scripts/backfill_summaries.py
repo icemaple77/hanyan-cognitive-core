@@ -45,8 +45,8 @@ from sqlalchemy import select
 # Allow running both as `python -m scripts.backfill_summaries` and directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from gateway.core.database import async_session  # noqa: E402
-from gateway.models import Memory, MemoryStatus  # noqa: E402
+from gateway.core.database import async_session
+from gateway.models import Memory, MemoryStatus
 
 logger = logging.getLogger("backfill_summaries")
 
@@ -97,7 +97,7 @@ async def _summarize(client: httpx.AsyncClient, content: str) -> str | None:
             if summary.startswith(prefix):
                 summary = summary[len(prefix):].strip()
         return summary[:MAX_SUMMARY_CHARS] or None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("summarize failed: %s", exc)
         return None
 
@@ -116,7 +116,7 @@ async def _load_batch(session, limit: int) -> list[Memory]:
 async def run(*, limit: int | None, dry_run: bool, reembed: bool) -> None:
     embed_text = None
     if reembed:
-        from gateway.core.embeddings import embed_text as _embed  # noqa: E402
+        from gateway.core.embeddings import embed_text as _embed
         embed_text = _embed
 
     processed = filled = skipped = failed = 0
@@ -159,7 +159,7 @@ async def run(*, limit: int | None, dry_run: bool, reembed: bool) -> None:
                     if embed_text is not None:
                         try:
                             mem.embedding = embed_text(f"{mem.content}\n{summary}")
-                        except Exception:  # noqa: BLE001
+                        except Exception:
                             logger.warning("re-embed failed for %s", mem.id)
                     filled += 1
 

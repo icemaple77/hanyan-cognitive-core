@@ -49,16 +49,16 @@ if _THIS_DIR not in sys.path:
 # import 真正的 mcp 包成功、被 Python 缓存之后,再把项目根加回 sys.path,
 # 这样后面 import memory_tools(它要 import gateway/core)才能找到东西,
 # 且不会反过来影响已经缓存好的 mcp 包解析。
-from mcp.server.fastmcp import FastMCP  # noqa: E402  (import after path fix)
+from mcp.server.fastmcp import FastMCP
 
 if _PROJECT_ROOT not in sys.path:
     sys.path.append(_PROJECT_ROOT)
 
-import memory_tools  # noqa: E402
-import task_tools  # noqa: E402
-import priority_tools  # noqa: E402
+import memory_tools
+import task_tools
+import priority_tools
 
-from core.config import core_settings  # noqa: E402  单一配置源(2026-09-03)
+from core.config import core_settings
 
 mcp = FastMCP("hcc-memory")
 

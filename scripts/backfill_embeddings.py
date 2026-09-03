@@ -36,11 +36,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import select
 
-from gateway.core.database import async_session  # noqa: E402
-from gateway.core.embeddings import EMBEDDING_PROVIDER, embed_text  # noqa: E402
-from gateway.models import Document, Memory  # noqa: E402
+from gateway.core.database import async_session
+from gateway.core.embeddings import EMBEDDING_PROVIDER, embed_text
+from gateway.models import Document, Memory
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("hcc.backfill_embeddings")
@@ -62,7 +62,7 @@ async def _embed_row(row, text_of, semaphore: asyncio.Semaphore) -> tuple[object
         try:
             row.embedding = await asyncio.to_thread(embed_text, text)
             return row, None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return row, exc
 
 

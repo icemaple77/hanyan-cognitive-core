@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.core.database import get_session
-from core.graph import GraphEngine, Entity, Relation
+from core.graph import GraphEngine
 from pydantic import BaseModel, Field
 
 router = APIRouter()

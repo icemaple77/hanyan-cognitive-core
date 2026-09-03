@@ -84,7 +84,7 @@ async def _on_memory_created(event: Event) -> None:
 
     try:
         decision = await evaluate(str(content), memory_source=payload.get("source", ""))
-    except Exception:  # noqa: BLE001 - never let a filter bug break the event pipeline
+    except Exception:
         logger.exception("noise_filter: evaluate raised for memory_id=%s", memory_id)
         return
 
@@ -102,7 +102,7 @@ async def _on_memory_created(event: Event) -> None:
                 "noise_filter: discarded memory_id=%s importance=%.2f (verdict=%s)",
                 memory_id, decision.importance, decision.source,
             )
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("noise_filter: DB update failed for memory_id=%s", memory_id)
 
 

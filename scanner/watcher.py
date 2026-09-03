@@ -22,7 +22,6 @@ Beyond the original one-shot / polling scan the watcher gains v2 capabilities:
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import fnmatch
 import hashlib
@@ -300,7 +299,7 @@ class Watcher:
             mapping = index_qmd_files(engine.qmd_dir)
             linked = await self._update_qmd_paths(conn, mapping)
             logger.info("sync complete: linked %d file(s) to QMD entries", linked)
-        except Exception:  # noqa: BLE001 - sync failures must not abort a scan
+        except Exception:
             logger.exception("post-scan sync failed")
 
     async def _process_file(
@@ -338,7 +337,7 @@ class Watcher:
 
         try:
             doc = parse_file(path)
-        except Exception as exc:  # noqa: BLE001 - never let parsing abort the scan
+        except Exception as exc:
             stats.failed += 1
             logger.error("failed to parse %s: %s", path, exc)
             await self._upsert_record(
@@ -397,7 +396,7 @@ class Watcher:
         while True:
             try:
                 await self.scan_once()
-            except Exception as exc:  # noqa: BLE001 - keep the loop alive
+            except Exception as exc:
                 logger.exception("scan pass failed: %s", exc)
             await asyncio.sleep(self._settings.interval)
 
@@ -477,7 +476,7 @@ class Watcher:
                 logger.info("change detected; rescanning")
                 try:
                     await self.scan_once()
-                except Exception:  # noqa: BLE001 - keep watching after a failure
+                except Exception:
                     logger.exception("scan pass failed")
         except asyncio.CancelledError:  # pragma: no cover - shutdown path
             raise

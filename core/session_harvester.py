@@ -131,7 +131,7 @@ class SessionHarvester:
                         stored += await self._harvest_agent_sqlite(ad, client)
                     else:
                         stored += await self._harvest_files(ad, client)
-                except Exception:  # noqa: BLE001 - 一个源坏了不拖垮整轮
+                except Exception:
                     logger.warning("harvester: %s 收割失败", ad.get("name"), exc_info=True)
         self._save_state()
         if stored:

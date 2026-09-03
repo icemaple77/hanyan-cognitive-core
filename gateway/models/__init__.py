@@ -14,7 +14,7 @@ from gateway.core.fts import build_search_text, tokenize_for_fts
 # 2026-09-03 事故:这里曾硬编码 1024 而运行时实际产出 768(.env),导致 documents
 # 列 1024/查询 768,语义检索每次报 "different vector dimensions"、知识召回静默
 # 降级成纯 BM25。建表维度与产出维度自此共用 core_settings.embedding_dim。
-from core.config import core_settings  # noqa: E402
+from core.config import core_settings
 
 EMBEDDING_DIM = core_settings.embedding_dim
 

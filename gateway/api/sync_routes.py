@@ -55,7 +55,7 @@ async def _debounced_sync() -> None:
         await _run_sync_once()
     except asyncio.CancelledError:
         raise
-    except Exception:  # noqa: BLE001 - never let a sync failure surface elsewhere
+    except Exception:
         logger.exception("event-triggered sync pass failed")
 
 
@@ -90,7 +90,7 @@ async def trigger_sync() -> dict[str, Any]:
     """Run one bidirectional QMD<->DB sync pass on demand."""
     try:
         return await _run_sync_once()
-    except Exception as exc:  # noqa: BLE001 - report to the caller
+    except Exception as exc:
         logger.exception("manual sync pass failed")
         from fastapi import HTTPException
 

@@ -219,7 +219,7 @@ class Absorber:
             # generator.root is "<qmd_dir>/Knowledge"; resolve_qmd_path wants qmd_dir.
             path = resolve_qmd_path(generator.root.parent, memory_id)
             return str(path) if path else None
-        except Exception:  # noqa: BLE001 - QMD generation must never break absorb
+        except Exception:
             logger.exception("QMD generation after absorb failed")
             return None
 

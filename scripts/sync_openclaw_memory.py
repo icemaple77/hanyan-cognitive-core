@@ -150,7 +150,7 @@ def store_chunk(
             resp = session.post(f"{hcc_url}/api/v1/memory/store", json=payload, timeout=15)
             resp.raise_for_status()
             return True
-        except requests.RequestException as exc:  # noqa: PERF203 - retry loop is the point
+        except requests.RequestException as exc:
             last_error = exc
             if attempt < RETRY_ATTEMPTS:
                 time.sleep(RETRY_BACKOFF_SECONDS * attempt)

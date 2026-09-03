@@ -57,7 +57,7 @@ async def _dream_light_loop() -> None:
             await DreamEngine().run_light()
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - keep the loop alive
+        except Exception:
             logger.exception("dream light phase failed")
 
 
@@ -72,7 +72,7 @@ async def _dream_rem_loop() -> None:
             await DreamEngine().run_rem()
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - keep the loop alive
+        except Exception:
             logger.exception("dream REM phase failed")
 
 
@@ -87,7 +87,7 @@ async def _dream_deep_loop() -> None:
             await DreamEngine().run_deep()
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - keep the loop alive
+        except Exception:
             logger.exception("dream deep phase failed")
 
 
@@ -107,7 +107,7 @@ async def _periodic_sync_loop() -> None:
             await SyncEngine().sync_once()
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - keep the loop alive
+        except Exception:
             logger.exception("periodic sync pass failed")
 
 
@@ -129,7 +129,7 @@ async def _harvester_loop() -> None:
             await harvester.harvest_once()
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - keep the loop alive
+        except Exception:
             logger.exception("session harvest pass failed")
 
 
@@ -179,20 +179,20 @@ async def lifespan(app: FastAPI):
         harvest_task.cancel()
         try:
             await harvest_task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        except (asyncio.CancelledError, Exception):
             pass
     if sync_task is not None:
         sync_task.cancel()
         try:
             await sync_task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        except (asyncio.CancelledError, Exception):
             pass
     for task in dream_tasks:
         task.cancel()
     for task in dream_tasks:
         try:
             await task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        except (asyncio.CancelledError, Exception):
             pass
     await get_event_bus().close()
     await engine.dispose()

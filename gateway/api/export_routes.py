@@ -22,5 +22,5 @@ async def trigger_agent_export() -> dict:
     try:
         stats = await AgentExporter().generate_all()
         return stats.as_dict()
-    except Exception as exc:  # noqa: BLE001 - report to caller
+    except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

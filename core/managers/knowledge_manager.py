@@ -88,7 +88,7 @@ class KnowledgeManager:
             bus = await self._ensure_bus()
             if bus is not None:
                 await bus.publish_event(EventType.KNOWLEDGE_MERGED, payload)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.warning("Failed to publish KNOWLEDGE_MERGED event", exc_info=True)
 
     # ------------------------------------------------------------------

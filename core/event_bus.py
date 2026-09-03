@@ -37,7 +37,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from types import TracebackType
-from typing import Any, Awaitable, Callable
+from typing import Any
+from collections.abc import Awaitable, Callable
 
 try:  # Redis is an optional dependency (HCC_REDIS_ENABLED=false by default).
     import redis.asyncio as aioredis
@@ -287,7 +288,7 @@ class EventBus:
         for task in self._tasks:
             try:
                 await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            except (asyncio.CancelledError, Exception):
                 pass
         self._tasks.clear()
 
@@ -295,7 +296,7 @@ class EventBus:
         for pubsub in self._pubsubs:
             try:
                 await pubsub.aclose()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.debug("Error closing pubsub", exc_info=True)
         self._pubsubs.clear()
         if self._client is not None:
@@ -447,7 +448,7 @@ class EventBus:
             result = callback(event)
             if asyncio.iscoroutine(result):
                 await result
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Event callback raised for %s", event.event_type)
 
     async def _redis_reader(self, pubsub: Any, callback: EventCallback) -> None:
@@ -459,7 +460,7 @@ class EventBus:
                 await self._dispatch(callback, message["data"])
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Event reader loop terminated unexpectedly")
 
     async def _memory_reader(
@@ -472,5 +473,5 @@ class EventBus:
                 await self._dispatch(callback, raw)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Event reader loop terminated unexpectedly")

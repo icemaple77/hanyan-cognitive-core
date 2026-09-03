@@ -29,7 +29,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from collections.abc import Iterable
 
 import yaml
 from sqlalchemy import select

@@ -141,7 +141,7 @@ async def build_context(request: ContextRequest) -> ContextResponse:
             include_personality=request.include_personality,
             limit=limit,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("Context build failed for user=%s", request.user_id)
         raise HTTPException(
             status_code=500, detail=f"Context build failed: {exc}"
@@ -169,7 +169,7 @@ async def build_context(request: ContextRequest) -> ContextResponse:
             knowledge_context=_render_items(knowledge_items, key="heading"),
             emotion_state=context.get("emotion_state"),
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("Prompt build failed for user=%s", request.user_id)
         raise HTTPException(
             status_code=500, detail=f"Prompt build failed: {exc}"
