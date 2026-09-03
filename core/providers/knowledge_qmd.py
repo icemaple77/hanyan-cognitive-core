@@ -273,6 +273,62 @@ class KnowledgeQMDProvider(Provider):
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
+    async def _search_indexed(self, query: SearchQuery) -> SearchResult:
+        """走 documents 表的 BM25 + 向量 + RRF —— 快路(2026-09-03)。
+
+        原实现每次查询暴力扫 54MB 全文、按"命中几个 jieba token"排序:1124 篇里
+        617 篇都算命中,词面重复多的旧档天然靠前(问"含烟的身份锚点"召回的是
+        "HanyanOS Soul 模型化方案需分层"这种擦边货)。既慢(207ms)又不对题。
+
+        改走 documents 表:同一批文件已由索引器入库并带 768 维向量,检索是真正的
+        语义 + BM25 融合。用 path_prefix 限定 Knowledge 子树,而不是单开 collection
+        (单开会与 aicore 全量扫描重复索引同一批文件)。
+
+        heading 仍从正文的 `# 标题` 现取(索引器把 title 存成文件名),只对返回的
+        ≤limit 条做,开销可忽略,显示效果与老实现一致。
+        """
+        from gateway.core.database import async_session
+        from gateway.core.embeddings import embed_text
+        from gateway.services.document_service import DocumentService
+        from core.doc_index import knowledge_path_prefix
+
+        try:
+            emb = embed_text(query.query, is_query=True) if query.query else None
+        except Exception:  # 嵌入不可用 → 退化成纯 BM25,不挡检索
+            logger.warning("knowledge search: 查询嵌入失败,退化为 BM25", exc_info=True)
+            emb = None
+
+        async with async_session() as session:
+            rows = await DocumentService(session).hybrid_search(
+                query=query.query or "", embedding=emb,
+                limit=query.limit + query.offset,
+                path_prefix=knowledge_path_prefix() or None,
+            )
+        items: list[dict[str, Any]] = []
+        for row in rows[query.offset:]:
+            # hybrid_search 返回 {document: <ORM 对象>, snippet, rrf_score, ...}
+            doc = row.get("document")
+            if doc is None:
+                continue
+            content = doc.content or ""
+            rel = doc.path or ""
+            m = _HEADING_RE.search(content)
+            parts = rel.split("/")
+            items.append({
+                "id": rel,
+                "path": rel,
+                "category": parts[-2] if len(parts) > 1 else DEFAULT_CATEGORY,
+                # 索引器把 title 存成文件名,正文里的 `# 标题` 更可读 —— 只对返回的
+                # ≤limit 条现取,开销可忽略,显示效果与老的文件扫描实现一致。
+                "heading": (m.group(1).strip() if m else (doc.title or rel)),
+                "content": content,
+                "type": None, "user_id": None, "importance": None,
+                "tags": [], "source": "documents",
+                "snippet": row.get("snippet"),
+                "score": row.get("rrf_score"),
+            })
+        return SearchResult(items=items, total=len(rows), provider=self.name)
+
     async def search(self, query: SearchQuery) -> SearchResult:
         """Search knowledge documents by heading/content (and optional type).
 
@@ -286,6 +342,15 @@ class KnowledgeQMDProvider(Provider):
         hit count (most matching tokens first), then paginated with
         ``offset``/``limit``. An empty ``query`` lists everything.
         """
+        # 分流:不带 frontmatter 过滤时走索引快路(语义检索,~50ms)。带 type/
+        # user_id 过滤的调用方仍走下面的文件扫描——documents 表不存 frontmatter,
+        # 为了快而悄悄丢掉过滤能力是不可接受的。
+        if query.query and not query.type and not query.user_id:
+            try:
+                return await self._search_indexed(query)
+            except Exception:  # 索引路径出问题 → 回退文件扫描,绝不让知识检索断供
+                logger.warning("knowledge 索引检索失败,回退文件扫描", exc_info=True)
+
         tokens = tokenize_for_fts(query.query or "").split()
         # token 小写只做一次 —— 原本写在 per-doc 循环里,1124 篇 × N token 次冗余调用
         tokens_lower = [t.lower() for t in tokens]

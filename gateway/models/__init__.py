@@ -4,8 +4,9 @@ import uuid
 from datetime import datetime, timezone
 from enum import StrEnum
 
-from sqlalchemy import Column, String, Float, Date, DateTime, Text, JSON, Boolean, Integer, Index, UniqueConstraint, CheckConstraint, event, text
+from sqlalchemy import Column, String, Float, Date, DateTime, Text, JSON, Boolean, Integer, Index, UniqueConstraint, CheckConstraint, Computed, event, text
 from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects.postgresql import TSVECTOR
 
 from gateway.core.database import Base
 from gateway.core.fts import build_search_text, tokenize_for_fts
@@ -111,6 +112,17 @@ class Document(Base):
     embedding = Column(Vector(EMBEDDING_DIM), nullable=True)
     # 同 Memory.embedding_model:向量空间身份,换模型时用来查"谁还没重算"。
     embedding_model = Column(String(128), nullable=True, index=True)
+    # BM25 排序用的 tsvector。**PG 生成列**(GENERATED ALWAYS ... STORED),由数据库
+    # 自动维护、永不与 search_text 失同步。存它的理由:ts_rank_cd 若直接写
+    # to_tsvector(search_text),PG 会为每个命中行重新解析全文,且 ORDER BY rank 逼它
+    # 对所有命中行都算一遍——实测同一查询 891ms;改用存好的列后 0.588ms(1500×)。
+    # 用 Computed 声明:SQLAlchemy 据此知道**绝不能** insert/update 这一列
+    # (写生成列会被 PG 直接拒绝),同时 create_all 建新库时会自动带上生成表达式。
+    search_tsv = Column(
+        TSVECTOR,
+        Computed("to_tsvector('simple', search_text)", persisted=True),
+        nullable=True,
+    )
     mtime = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

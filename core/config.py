@@ -83,6 +83,22 @@ class CoreSettings(BaseSettings):
         description="进程内回调自身 API 的地址(收割器入库用)。",
     )
 
+    # --- 文档索引增量同步(md 改动自动重新索引)---------------------------
+    doc_index_enabled: bool = Field(
+        default=True,
+        description=(
+            "是否开启文档增量索引循环。知识检索改走 documents 表后,若不自动检测"
+            "文件变更就会静默服务过期内容——这个开关默认必须是开的。"
+        ),
+    )
+    doc_index_interval: int = Field(
+        default=60, ge=5,
+        description=(
+            "增量索引巡检周期(秒)。按 (mtime, 大小) 签名比对,未变的文件不读不算,"
+            "一轮只有 stat 开销(实测 ~4ms/1124 文件),所以可以跑得很勤。"
+        ),
+    )
+
     # --- 注入(读路渲染)---------------------------------------------------
     inject_fragment_cap: int = Field(
         default=0, ge=0,

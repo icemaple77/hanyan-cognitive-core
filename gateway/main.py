@@ -134,6 +134,29 @@ async def _harvester_loop() -> None:
             logger.exception("session harvest pass failed")
 
 
+async def _doc_index_loop() -> None:
+    """每 HCC_DOC_INDEX_INTERVAL 秒增量索引 md 文档,让知识检索保持新鲜。
+
+    知识检索原先直接读文件(慢,但永远新鲜);改走 documents 表的语义检索后,
+    必须自己负责新鲜度——否则就是"静默服务过期内容",正是 2026-09-03 修了一天的
+    那类失效方式。按 (mtime, 大小) 签名比对,没变的文件不读不算,一轮只有 stat
+    开销,所以可以跑得很勤。见 core/doc_index.py。异常吞掉保活。
+    """
+    from core.doc_index import DocIndexSync
+
+    interval = core_settings.doc_index_interval
+    syncer = DocIndexSync()
+    logger.info("doc index sync started (interval=%ss)", interval)
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await syncer.sync_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("doc index sync pass failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -158,6 +181,14 @@ async def lifespan(app: FastAPI):
         # 的固有限制,不是配置问题。
         # 写在这里而不是手工敲 SQL:2026-08-29 的向量事故正是"手工改库、无痕迹、
         # 换机器/重建库就丢失"造成的,同样的坑不踩第二次。
+        # BM25 排序用的 tsvector 生成列:ts_rank_cd 若现算 to_tsvector(search_text),
+        # PG 要为每个命中行重解析全文,ORDER BY rank 更逼它全算一遍——实测 documents
+        # 上同一查询 891ms;改用生成列后 0.588ms(1500×)。生成列由 PG 维护,永不失同步。
+        await conn.execute(text(
+            "ALTER TABLE documents ADD COLUMN IF NOT EXISTS search_tsv tsvector "
+            "GENERATED ALWAYS AS (to_tsvector('simple', search_text)) STORED"))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_documents_search_tsv ON documents USING gin (search_tsv)"))
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         for _idx, _col in (("ix_memories_content_trgm", "content"),
                            ("ix_memories_summary_trgm", "summary")):
@@ -198,8 +229,18 @@ async def lifespan(app: FastAPI):
     if core_settings.harvester_enabled:
         harvest_task = asyncio.create_task(_harvester_loop())
 
+    doc_index_task: asyncio.Task | None = None
+    if core_settings.doc_index_enabled:
+        doc_index_task = asyncio.create_task(_doc_index_loop())
+
     yield
     # Shutdown
+    if doc_index_task is not None:
+        doc_index_task.cancel()
+        try:
+            await doc_index_task
+        except (asyncio.CancelledError, Exception):
+            pass
     if harvest_task is not None:
         harvest_task.cancel()
         try:
