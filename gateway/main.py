@@ -23,6 +23,7 @@ from core.sync_engine import SyncEngine
 from gateway.api import health, memory_routes, context_routes, graph_routes, emotion_routes, cognitive_routes, document_routes, events_routes, sync_routes, dream_routes, vault_routes, export_routes, task_routes, priority_routes
 from gateway.core.database import engine, Base
 from gateway.core.events import get_event_bus
+from gateway.core.vector_guard import check_vector_dims
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger(__name__)
@@ -142,6 +143,10 @@ async def lifespan(app: FastAPI):
         # create_all 只建新表(priorities 走这)、不给已存在的表加列。tasks 表已存在,
         # 循环任务新增的 repeat 列必须显式补,否则 ORM 期待的列库里没有 → task_create 崩。
         await conn.execute(text("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS repeat VARCHAR(64)"))
+        # 向量维度自检:换模型漏迁移会让相关表的语义检索静默降级(2026-08-29 事故,
+        # documents 死了 5 天没人知道)。不一致时大声报错并挂到 /health,但不拒绝
+        # 启动——HCC 不能挂,宁可响铃也不停机。见 gateway/core/vector_guard.py。
+        await check_vector_dims(conn, core_settings.embedding_dim)
     bus = await get_event_bus().connect()
     logger.info("EventBus connected (backend=%s)", bus.backend)
 
