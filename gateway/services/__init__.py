@@ -272,7 +272,10 @@ class MemoryService:
         # segmented by us, and plainto_tsquery has no special operator syntax
         # (quotes/OR/-) to misinterpret if a jieba token happens to start
         # with a character like '-'. It just ANDs every token together.
-        tsvector_expr = func.to_tsvector("simple", Memory.search_text)
+        # 用触发器维护的 search_tsv 列,而不是现算 to_tsvector(search_text):
+        # 后者让 PG 为每个命中行重解析全文,ORDER BY rank 更逼它全算一遍
+        # (实测 507ms → 11.8ms,43x)。列由 trg_memories_search_tsv 保证同步。
+        tsvector_expr = Memory.search_tsv
         tsquery_expr = func.plainto_tsquery("simple", tokens)
         rank = func.ts_rank_cd(tsvector_expr, tsquery_expr).label("rank")
 

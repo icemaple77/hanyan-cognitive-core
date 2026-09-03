@@ -189,6 +189,22 @@ async def lifespan(app: FastAPI):
             "GENERATED ALWAYS AS (to_tsvector('simple', search_text)) STORED"))
         await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_documents_search_tsv ON documents USING gin (search_tsv)"))
+        # memories 的 BM25 排序列。documents 用的是 PG 生成列,但 memories 已有
+        # 11.7 万行/149MB,改成生成列要重写整表并长时间锁读写;这里用"瞬时加列 +
+        # 触发器"达到同样的数据库侧保证(永不与 search_text 失同步)。
+        await conn.execute(text("ALTER TABLE memories ADD COLUMN IF NOT EXISTS search_tsv tsvector"))
+        await conn.execute(text("""
+            CREATE OR REPLACE FUNCTION memories_search_tsv_trg() RETURNS trigger AS $BODY$
+            BEGIN
+              NEW.search_tsv := to_tsvector('simple', COALESCE(NEW.search_text, ''));
+              RETURN NEW;
+            END $BODY$ LANGUAGE plpgsql"""))
+        await conn.execute(text("DROP TRIGGER IF EXISTS trg_memories_search_tsv ON memories"))
+        await conn.execute(text("""
+            CREATE TRIGGER trg_memories_search_tsv BEFORE INSERT OR UPDATE OF search_text
+            ON memories FOR EACH ROW EXECUTE FUNCTION memories_search_tsv_trg()"""))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_memories_search_tsv ON memories USING gin (search_tsv)"))
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         for _idx, _col in (("ix_memories_content_trgm", "content"),
                            ("ix_memories_summary_trgm", "summary")):

@@ -63,6 +63,12 @@ class Memory(Base):
     # ranking — 'simple' just lowercases/splits, all the real CJK segmentation
     # already happened in Python so both index and query tokenize identically.
     search_text = Column(Text, default="", nullable=False, server_default="")
+    # BM25 排序用的 tsvector。与 Document.search_tsv 同理(ts_rank_cd 若现算
+    # to_tsvector 会为每个命中行重解析全文:实测 507ms → 用本列 11.8ms,43x)。
+    # 这里用**触发器**维护而非 PG 生成列:memories 已有 11.7 万行/149MB,改成生成列
+    # 要重写整表并长时间锁读写;触发器同样是数据库侧保证、永不与 search_text 失同步,
+    # 却只需瞬时加列。见 lifespan 里的 trg_memories_search_tsv。
+    search_tsv = Column(TSVECTOR, nullable=True)
     access_count = Column(Integer, default=0, nullable=False)
     last_access = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
