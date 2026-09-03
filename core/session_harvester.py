@@ -17,6 +17,7 @@ import glob
 import json
 import logging
 import os
+import sqlite3
 from pathlib import Path
 
 import httpx
@@ -70,13 +71,15 @@ def _parse_claude(obj: dict):
     return (role, text) if text else None
 
 
-# 每个 runtime 一个适配器。加新 runtime 只需在这里加一行。
+# 每个 runtime 一个适配器。kind=file(默认,tail JSONL)或 sqlite(查库,按自增 id 增量)。
 ADAPTERS = [
-    {"name": "openclaw", "agent_id": "openclaw",
+    {"name": "openclaw", "agent_id": "openclaw", "kind": "file",
      "glob": str(Path.home() / ".openclaw/agents/main/sessions/*.jsonl"), "parse": _parse_openclaw},
-    {"name": "claude", "agent_id": "claude-code",
+    {"name": "claude", "agent_id": "claude-code", "kind": "file",
      "glob": str(Path.home() / ".claude/projects/*/*.jsonl"), "parse": _parse_claude},
-    # hermes:会话文件位置待定,定位后加一行即可
+    # hermes 不留 JSONL 对话流,对话在 ~/.hermes/state.db 的 messages 表(id 自增)
+    {"name": "hermes", "agent_id": "hermes", "kind": "sqlite",
+     "db": str(Path.home() / ".hermes/state.db"), "table": "messages"},
 ]
 
 
@@ -109,58 +112,100 @@ class SessionHarvester:
             logger.warning("harvester: 入库失败 %s: %s", name, e)
 
     async def harvest_once(self) -> int:
-        """收割一轮所有 runtime 的新消息,返回本轮入库条数。"""
+        """收割一轮所有 runtime 的新消息,返回本轮入库条数。单个 runtime 失败不影响其它。"""
         stored = 0
         async with httpx.AsyncClient() as client:
             for ad in ADAPTERS:
-                for f in glob.glob(ad["glob"]):
-                    if f.endswith(".trajectory.jsonl"):
-                        continue  # openclaw 的 runtime trace,不是干净对话,跳过
-                    try:
-                        size = os.path.getsize(f)
-                    except OSError:
-                        continue
-                    off = self._state.get(f)
-                    if off is None:            # 首见:从 EOF 起,不倒灌历史
-                        self._state[f] = size
-                        continue
-                    if size < off:             # 文件被截断/轮转:从头再来
-                        off = 0
-                    if size <= off:
-                        continue
-                    try:
-                        with open(f, "r", encoding="utf-8", errors="ignore") as fh:
-                            fh.seek(off)
-                            data = fh.read()
-                            new_off = fh.tell()
-                    except OSError:
-                        continue
-                    # 只处理完整行(最后一行可能没写完 → 回退到最后换行)
-                    if not data.endswith("\n"):
-                        cut = data.rfind("\n")
-                        if cut == -1:
-                            continue           # 一整行都还没写完,等下轮
-                        new_off = off + len(data[:cut + 1].encode("utf-8"))
-                        data = data[:cut + 1]
-                    for line in data.split("\n"):
-                        if not line.strip():
-                            continue
-                        try:
-                            obj = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        parsed = ad["parse"](obj)
-                        if not parsed:
-                            continue
-                        role, text = parsed
-                        content = f"{role}: {text}"
-                        if self._last.get(f) == content:   # 去相邻重复
-                            continue
-                        self._last[f] = content
-                        await self._store(client, content, ad["agent_id"], ad["name"])
-                        stored += 1
-                    self._state[f] = new_off
+                try:
+                    if ad.get("kind") == "sqlite":
+                        stored += await self._harvest_sqlite(ad, client)
+                    else:
+                        stored += await self._harvest_files(ad, client)
+                except Exception:  # noqa: BLE001 - 一个源坏了不拖垮整轮
+                    logger.warning("harvester: %s 收割失败", ad.get("name"), exc_info=True)
         self._save_state()
         if stored:
             logger.info("harvester: 本轮收割 %d 条对话入库(过 4b)", stored)
+        return stored
+
+    async def _harvest_files(self, ad: dict, client: httpx.AsyncClient) -> int:
+        """tail JSONL 文件源(openclaw/claude):字节水位增量。"""
+        stored = 0
+        for f in glob.glob(ad["glob"]):
+            if f.endswith(".trajectory.jsonl"):
+                continue  # openclaw runtime trace,非干净对话
+            try:
+                size = os.path.getsize(f)
+            except OSError:
+                continue
+            off = self._state.get(f)
+            if off is None:            # 首见:从 EOF 起,不倒灌历史
+                self._state[f] = size
+                continue
+            if size < off:             # 文件被截断/轮转:从头再来
+                off = 0
+            if size <= off:
+                continue
+            try:
+                with open(f, "r", encoding="utf-8", errors="ignore") as fh:
+                    fh.seek(off)
+                    data = fh.read()
+                    new_off = fh.tell()
+            except OSError:
+                continue
+            if not data.endswith("\n"):  # 最后一行可能没写完 → 回退到最后换行
+                cut = data.rfind("\n")
+                if cut == -1:
+                    continue
+                new_off = off + len(data[:cut + 1].encode("utf-8"))
+                data = data[:cut + 1]
+            for line in data.split("\n"):
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                parsed = ad["parse"](obj)
+                if not parsed:
+                    continue
+                role, text = parsed
+                content = f"{role}: {text}"
+                if self._last.get(f) == content:   # 去相邻重复
+                    continue
+                self._last[f] = content
+                await self._store(client, content, ad["agent_id"], ad["name"])
+                stored += 1
+            self._state[f] = new_off
+        return stored
+
+    async def _harvest_sqlite(self, ad: dict, client: httpx.AsyncClient) -> int:
+        """SQLite 库源(hermes):按自增 id 增量查 messages 表。只读打开,绝不写库。"""
+        db, table = ad["db"], ad["table"]
+        if not os.path.exists(db):
+            return 0
+        key = f"sqlite:{db}:{table}"
+        stored = 0
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+        try:
+            cur = conn.cursor()
+            wm = self._state.get(key)
+            if wm is None:  # 首见:水位=当前最大 id,不倒灌历史
+                row = cur.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()
+                self._state[key] = row[0] if row else 0
+                return 0
+            rows = cur.execute(
+                f"SELECT id, role, content FROM {table} "
+                "WHERE id > ? AND role IN ('user','assistant') "
+                "AND content IS NOT NULL AND content != '' ORDER BY id ASC LIMIT 500",
+                (wm,),
+            ).fetchall()
+            for mid, role, text in rows:
+                text = (text or "").strip()
+                if text:
+                    await self._store(client, f"{role}: {text}", ad["agent_id"], ad["name"])
+                    stored += 1
+                self._state[key] = mid
+        finally:
+            conn.close()
         return stored
