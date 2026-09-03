@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd job: run the Task-Schedule cron driver every 120s for agent "hanyan".
+     Install:  cp scripts/com.hanyan.hcc-task-driver.plist ~/Library/LaunchAgents/
+               launchctl load ~/Library/LaunchAgents/com.hanyan.hcc-task-driver.plist
+     Stop:     launchctl unload ~/Library/LaunchAgents/com.hanyan.hcc-task-driver.plist
+     Adjust the two absolute paths / PATH / HCC_AGENT_ID if your layout differs. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hanyan.hcc-task-driver</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/michael/workspace/projects/HCC/scripts/task_driver.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HCC_AGENT_ID</key>
+        <string>hanyan</string>
+        <key>HCC_BASE</key>
+        <string>http://localhost:8000/api/v1</string>
+        <key>PATH</key>
+        <string>/Users/michael/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>120</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/michael/.hcc/task-driver/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/michael/.hcc/task-driver/launchd.err.log</string>
+</dict>
+</plist>
