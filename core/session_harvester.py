@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 import httpx
@@ -75,6 +76,12 @@ def _parse_claude(obj: dict):
 ADAPTERS = [
     {"name": "openclaw", "agent_id": "openclaw", "kind": "file",
      "glob": str(Path.home() / ".openclaw/agents/main/sessions/*.jsonl"), "parse": _parse_openclaw},
+    # 8.x: 会话 jsonl 整体迁入 per-agent SQLite(openclaw-agent.sqlite.transcript_events)。
+    # 与 file 适配器互斥:只要 sessions/*.jsonl 还活着(7.x)本适配器让位,绝不双读双灌。
+    {"name": "openclaw", "agent_id": "openclaw", "kind": "agent_sqlite",
+     "glob": str(Path.home() / ".openclaw/agents/*/agent/openclaw-agent.sqlite"),
+     "jsonl_cutover": str(Path.home() / ".openclaw/agents/*/sessions/*.jsonl"),
+     "parse": _parse_openclaw},
     {"name": "claude", "agent_id": "claude-code", "kind": "file",
      "glob": str(Path.home() / ".claude/projects/*/*.jsonl"), "parse": _parse_claude},
     # hermes 不留 JSONL 对话流,对话在 ~/.hermes/state.db 的 messages 表(id 自增)
@@ -119,6 +126,8 @@ class SessionHarvester:
                 try:
                     if ad.get("kind") == "sqlite":
                         stored += await self._harvest_sqlite(ad, client)
+                    elif ad.get("kind") == "agent_sqlite":
+                        stored += await self._harvest_agent_sqlite(ad, client)
                     else:
                         stored += await self._harvest_files(ad, client)
                 except Exception:  # noqa: BLE001 - 一个源坏了不拖垮整轮
@@ -177,6 +186,59 @@ class SessionHarvester:
                 await self._store(client, content, ad["agent_id"], ad["name"])
                 stored += 1
             self._state[f] = new_off
+        return stored
+
+    async def _harvest_agent_sqlite(self, ad: dict, client: httpx.AsyncClient) -> int:
+        """8.x per-agent 库源:transcript_events(session_id,seq,event_json)。
+        event_json 与旧 jsonl 行同格式 → 复用 file 解析器。互斥:7.x jsonl 还活着就让位。"""
+        if ad.get("jsonl_cutover") and glob.glob(ad["jsonl_cutover"]):
+            return 0  # 7.x 时代:file 适配器负责,避免同一对话双份入库
+        stored = 0
+        for db in sorted(glob.glob(ad["glob"])):
+            try:
+                conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+            except sqlite3.Error:
+                continue
+            try:
+                cur = conn.cursor()
+                try:  # 8.2 未落地的库可能没这张表 → 跳过不报错
+                    rows = cur.execute(
+                        "SELECT session_id, seq, event_json FROM transcript_events "
+                        "WHERE created_at > ? AND (event_json LIKE '%\"type\":\"message\"%' "
+                        "OR event_json LIKE '%\"type\": \"message\"%') "
+                        "ORDER BY session_id, seq LIMIT 5000",
+                        (int(time.time() * 1000) - 12 * 3600 * 1000,)).fetchall()
+                except sqlite3.OperationalError:
+                    return 0
+            finally:
+                conn.close()
+            cur_session = None
+            for session_id, seq, event_json in rows:
+                key = f"agentdb:{db}:{session_id}"
+                if session_id != cur_session:      # 换会话:每会话水位
+                    cur_session = session_id
+                wm = self._state.get(key)
+                if wm is None:                     # 首见会话:水位=该会话最大 seq,不倒灌
+                    mx = max(s for sid, s, _ in rows if sid == session_id)
+                    self._state[key] = mx
+                    continue
+                if seq <= wm:
+                    continue
+                try:
+                    obj = json.loads(event_json)
+                except json.JSONDecodeError:
+                    self._state[key] = seq         # 坏行也推进水位,不卡死
+                    continue
+                parsed = ad["parse"](obj)
+                if parsed:
+                    role, text = parsed
+                    content = f"{role}: {text}"
+                    lkey = f"last:{db}:{session_id}"
+                    if self._last.get(lkey) != content:  # 相邻重复(重试/回写产生)
+                        await self._store(client, content, ad["agent_id"], ad["name"])
+                        stored += 1
+                    self._last[lkey] = content
+                self._state[key] = seq
         return stored
 
     async def _harvest_sqlite(self, ad: dict, client: httpx.AsyncClient) -> int:
