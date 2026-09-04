@@ -12,3 +12,8 @@ qmd/
 
 # 临时备份(工作区保留,不入库)
 *.bak-*
+
+# 运维快照(去重/压值前的原始清单,回滚用)。留在盘上,不进 git ——
+# 里面是记忆内容的摘录,含公子的邮箱等隐私;而本仓库是公开的。
+scripts/_lowtrust_before_*.json
+scripts/_kanban_dedup_*.json
