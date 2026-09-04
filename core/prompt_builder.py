@@ -186,7 +186,26 @@ class PromptBuilder:
         lines: list[str] = []
         if mood:
             lines.append(f"- mood: {mood}")
-        skip_keys = {"mood", "state", "named_state", "primary_emotion"}
+
+        # soul v2 的两样东西,比 17 个小数有用得多(2026-09-04,P5 接入):
+        #
+        # ① expression —— 语气指令。设计稿 §5.2:LLM 对「愉悦 0.73」反应很差,
+        #    对「多用短句、少讲道理」反应很好。这是"情绪引导语气"真正落地的地方;
+        #    没有它,情绪算得再准也只是几个不影响输出的数字。
+        # ② reminder —— §六 提醒制,峰值回落后的"这段值得记下来"。
+        #    公子定调:**只管发出,写不写是 agent 的事。**不挂待办、不等回执;
+        #    情绪按半衰期退回基线,提醒自然消失——人类也是这样,回家累了就没写。
+        #
+        # 放在最前面:它们是行为约束,排在只读的维度读数之前。
+        expression = emotion_state.get("expression")
+        if expression:
+            lines.append(f"- 表达:{expression}")
+        reminder = emotion_state.get("reminder")
+        if reminder:
+            lines.append(f"- 记一笔:{reminder}")
+
+        skip_keys = {"mood", "state", "named_state", "primary_emotion",
+                     "expression", "reminder"}
         for key, value in emotion_state.items():
             if key in skip_keys or value in (None, ""):
                 continue

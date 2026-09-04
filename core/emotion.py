@@ -596,7 +596,7 @@ class EmotionEngine:
         primary = max(s, key=s.get) if s else "neutral"
         named = compute_named_state(s, self._settings, self._baseline)
         meta = NAMED_STATE_META[named]
-        return {
+        out = {
             "state": s,
             "primary_emotion": primary,
             "intensity": f"{s.get(primary, 0):.2f}",
@@ -605,6 +605,23 @@ class EmotionEngine:
             "expression_hint": meta["expression_hint"],
             "last_update": self._last_update.isoformat(),
         }
+        # soul v2 在时,把它的两样东西带进注入(2026-09-04,P5):
+        #   expression —— 语气指令(§5.2:给行为指令,不给小数)
+        #   reminder   —— §六 提醒制的"这段值得记下来";只管发出,写不写是 agent 的事
+        # 命名态也优先用 soul 的:它查的是烟儿盖章的登记表(judgement + 反信号),
+        # 而 compute_named_state 是 HCC 侧按 17 维另算的一套——两套并存就是两个真相。
+        snap = self.last_soul_snapshot
+        if snap:
+            from core import soul_client
+
+            if soul_named := snap.get("named"):
+                out["named_state"] = soul_named[0]
+                out["named_state_all"] = soul_named
+            if line := soul_client.expression_line(snap):
+                out["expression"] = line
+            if line := soul_client.reminder_line(snap):
+                out["reminder"] = line
+        return out
 
     def get_display_summary(self) -> dict[str, Any]:
         """Compact payload for the small-screen display mode.
@@ -708,10 +725,15 @@ class EmotionEngine:
             return None
 
     async def update_neural(
-        self, text: str, source: str = "conversation", *, importance: float | None = None
+        self, text: str, source: str = "conversation", *, importance: float | None = None,
+        event_id: str | None = None,
     ) -> dict[str, float]:
         """Update emotional state, preferring the soul neural perception
         source over T3 keyword matching (docs/09-soul模型化讨论.md).
+
+        三级降级(2026-09-04 起):soul v2 有状态接口 → v1 无状态读数 → 关键词表。
+        ``event_id`` 是 v2 的幂等键(§八):情绪状态只有一份,而收割器/openclaw/
+        hermes 可能把同一句话投喂三次,不去重就三倍累积。不传则按内容哈希兜底。
 
         Tries :meth:`_fetch_neural_offsets` first (all 17 dims from the
         trained encoder); on any failure or when ``HCC_SOUL_SERVICE_ENABLED``
@@ -721,6 +743,35 @@ class EmotionEngine:
         raw dimension shifts, same role EMOTION_TRIGGERS plays for the
         keyword path.
         """
+        # ── soul v2 优先:它自己就是状态机,HCC 照抄即可(2026-09-04,P5)──────
+        # v1 是无状态编码器,累积/衰减/互抑都得 HCC 自己做(下面那一大段)。
+        # v2 把这些全搬进了 soul(饱和积分/各维半衰期/关系维地板/疲惫耦合),
+        # 若 HCC 再算一遍,就是**两个会分叉的真相**——设计稿 §八 的边界写得很直白:
+        #     soul 拥有情绪,HCC 拥有记忆。
+        # 故 v2 在时:直接采用它的读数,**不再本地衰减/EWMA/互抑**。
+        # soul 不可达 → 落回下面的 v1 路径 → 再不行落回关键词表。HCC 不能挂。
+        if self._settings.soul_service_enabled:
+            from core import soul_client
+
+            snap = await soul_client.perceive(text, source=source, event_id=event_id)
+            adopted = soul_client.legacy_dims(snap)
+            if adopted:
+                for dim, value in adopted.items():
+                    if dim in self._state:
+                        self._state[dim] = max(0.0, min(1.0, float(value)))
+                self._last_soul_snapshot = snap        # 供注入侧读 expression/提醒
+                snapshot = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "source": f"{source}:soul-v2",
+                    "state": dict(self._state),
+                    "triggered_by": sorted(snap.get("named") or []),
+                    "importance": importance,
+                }
+                self._history.append(snapshot)
+                if len(self._history) > 1000:
+                    self._history = self._history[-500:]
+                return dict(self._state)
+
         offsets = await self._fetch_neural_offsets(text) if self._settings.soul_service_enabled else None
         if offsets is None:
             return self.update(text, source, importance=importance)
@@ -757,11 +808,21 @@ class EmotionEngine:
 
         return dict(self._state)
 
+    @property
+    def last_soul_snapshot(self) -> dict[str, Any] | None:
+        """最近一次 soul v2 快照(含 expression 与 pending_episode)。
+
+        注入侧要的是这里的 ``expression``(语气指令)和 ``pending_episode``
+        (该写日记的提醒),它们是 v2 才有的东西,不在 17 维读数里。
+        """
+        return getattr(self, "_last_soul_snapshot", None)
+
     async def update_and_persist(
-        self, text: str, source: str = "conversation", *, importance: float | None = None
+        self, text: str, source: str = "conversation", *, importance: float | None = None,
+        event_id: str | None = None,
     ) -> dict[str, float]:
         """Convenience wrapper: update_neural() then save_to_redis() in one call."""
-        state = await self.update_neural(text, source, importance=importance)
+        state = await self.update_neural(text, source, importance=importance, event_id=event_id)
         await self.save_to_redis()
         return state
 
