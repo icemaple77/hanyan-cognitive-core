@@ -49,6 +49,19 @@ from gateway.models import DreamRun, DreamSignal, EmotionSnapshot, Memory, Memor
 
 logger = logging.getLogger(__name__)
 
+# 低信任判定**复用 noise_filter 的定义**,不在这里另抄一份常量 ——
+# 两处各写各的,迟早一边加了 source 另一边没加,而症状是"垃圾又回到核心记忆里"。
+from core.noise_filter_events import (  # noqa: E402
+    LOW_TRUST_IMPORTANCE_CAP,
+    LOW_TRUST_SOURCES,
+    LOW_TRUST_TYPES,
+)
+
+
+def _is_low_trust_memory(m) -> bool:
+    return getattr(m, "type", None) in LOW_TRUST_TYPES or getattr(m, "source", None) in LOW_TRUST_SOURCES
+
+
 
 class DreamEngine:
     """Nightly memory consolidation engine.
@@ -611,12 +624,28 @@ class DreamEngine:
                 (m, self._score_memory(m, signals_by_memory.get(m.id, []), started)) for m in candidates
             ]
 
+            # 低信任行(tool_result / openclaw_plugin)**不许提升**。
+            #
+            # 为什么必须在这里挡(2026-09-04 查实):
+            # noise_filter 把这类行的 importance 封顶在 LOW_TRUST_IMPORTANCE_CAP=0.4,
+            # 就是为了压在检索丢弃阈值 0.5 以下 —— 它的注释写着「Even a keep-verdict
+            # must never score them high enough to surface in search」,并记着
+            # 2026-08-26 有 870 条被抬到 ~0.85 泄进检索、后来被清掉。
+            # 而 deep 下面那句 `importance + 0.1` 把 0.4 顶成 0.5,**正好越过阈值** ——
+            # 等于 dreaming 每晚在重造八月清过的那批垃圾。
+            # 实测(9/3 deep):提升的 10 条**全部**是 [OpenClaw tool_result:exec],
+            # 内容是 shell 输出、音频时长、文件路径、`loaded: list[str] = []`。
+            #
+            # 打分函数救不了这件事:frequency=访问数/10、conceptual=标签数/5 ——
+            # 收割进来的日志恰好在这两项上得分最高(量大、标签多),
+            # 四项里没有一项在量"这东西有没有价值"。所以只能按来源挡。
             eligible = [
                 (m, s)
                 for m, s in scored
                 if s["score"] >= self._settings.dream_min_score
                 and (m.access_count or 0) >= self._settings.dream_min_access_count
                 and s["age_days"] <= self._settings.dream_max_age_days
+                and not _is_low_trust_memory(m)
             ]
             eligible.sort(key=lambda pair: pair[1]["score"], reverse=True)
             promoted_pairs = eligible[: self._settings.dream_limit]
@@ -628,7 +657,9 @@ class DreamEngine:
                 if date_tag not in tags:
                     tags.append(date_tag)
                 m.tags = tags
-                m.importance = min(1.0, (m.importance or 0.0) + 0.1)
+                # 双保险:低信任行即使漏进来,也绝不许被顶过 noise_filter 的封顶线
+                ceiling = LOW_TRUST_IMPORTANCE_CAP if _is_low_trust_memory(m) else 1.0
+                m.importance = min(ceiling, (m.importance or 0.0) + 0.1)
                 promoted_records.append(
                     {"id": m.id, "title": self._title(m), "score": s["score"], "components": s}
                 )

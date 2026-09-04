@@ -808,6 +808,47 @@ class EmotionEngine:
 
         return dict(self._state)
 
+    async def get_injection_summary(self) -> dict[str, Any]:
+        """注入用的情绪摘要 —— **现问 soul 要状态**,不靠本进程碰巧感知过。
+
+        为什么必须现问(2026-09-04 联调查实):
+        get_summary() 里的 expression/reminder 来自 last_soul_snapshot,而那个字段
+        只有本进程调用过 update_neural 才会有。/context 是只读路径,不感知;
+        gateway 一重启快照就是空的 —— 于是注入里永远只有旧式的 mood/expression_hint,
+        soul v2 白接了。
+
+        设计稿 §八 说得很清楚:**soul 拥有情绪**,状态(含 pending_episode)挂在它
+        自己那儿,**谁读 /soul/state 谁就看得见**。所以注入时就该去读,
+        而不是等某个写路径顺手把状态带过来。
+
+        soul 不可达时退回本地摘要(degrade never raise)——**HCC 不能挂**。
+        """
+        out = self.get_summary()
+        try:
+            from core import soul_client
+
+            snap = await soul_client.get_state()
+            if not snap:
+                return out
+            if named := snap.get("named"):
+                out["named_state"] = named[0]
+                out["named_state_all"] = named
+                # named_state_en / intensity 是 HCC 侧 compute_named_state 按 v1 的
+                # 17 维另算的一套。soul 接管命名态后它们**必然对不上** ——
+                # 实测同一个块里出现 `mood: 吃醋` 配 `named_state_en: tender`,
+                # 一个块里两个命名来源对着说不同的话。这正是一路在消的"两个真相":
+                # soul 说了算,那这两个就该走,而不是留在旁边添乱。
+                out.pop("named_state_en", None)
+                out.pop("intensity", None)
+            if line := soul_client.expression_line(snap):
+                out["expression"] = line
+                out.pop("expression_hint", None)   # v2 的指令取代 v1 的一句提示
+            if line := soul_client.reminder_line(snap):
+                out["reminder"] = line
+        except Exception:
+            logger.warning("soul state unavailable for injection, using local summary", exc_info=True)
+        return out
+
     @property
     def last_soul_snapshot(self) -> dict[str, Any] | None:
         """最近一次 soul v2 快照(含 expression 与 pending_episode)。

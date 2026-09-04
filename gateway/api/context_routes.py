@@ -35,7 +35,14 @@ router = APIRouter()
 
 # Shared, stateless pipeline components (constructed once, reused per request).
 _planner = QueryPlanner()
-_context_builder = ContextBuilder(emotion_provider=lambda user_id: get_emotion_engine().get_summary())
+async def _emotion_for_injection(user_id: str) -> dict:
+    """注入用的情绪。**async 的**——它要现去问 soul 要状态(见
+    EmotionEngine.get_injection_summary 的长注释:soul 拥有情绪,谁读谁看见)。
+    ContextBuilder 支持 async provider(它对返回值做 __await__ 判定)。"""
+    return await get_emotion_engine().get_injection_summary()
+
+
+_context_builder = ContextBuilder(emotion_provider=_emotion_for_injection)
 _prompt_builder = PromptBuilder()
 
 
