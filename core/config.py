@@ -405,6 +405,24 @@ class CoreSettings(BaseSettings):
         "(HCC_NOISE_FILTER_ENABLED). Subscribes to MEMORY_CREATED; a low-value "
         "verdict soft-deletes (status='discarded'), never a hard delete.",
     )
+    noise_filter_mode: str = Field(
+        default="batch",
+        description="噪音复核的时机:batch(默认)| live(HCC_NOISE_FILTER_MODE)。\n"
+        "batch —— 写入时不调模型,积压的低信任行在 dreaming 时段一次性过完。\n"
+        "live  —— 老行为,每条低信任写入实时判一次。\n"
+        "2026-09-05 默认改成 batch(公子:「噪音过滤的 4b 模型还是要想办法减负」):"
+        "逐条实时判意味着只要公子在跟 agent 聊天,ollama 就得把 4.7B 的 "
+        "qwen3.5 拉进内存(4.8 GB),判完还留 5 分钟才卸载 —— 「聊天」和"
+        "「4B 常驻」几乎划等号。实测每天约 800 次调用、23 分钟推理。"
+        "批处理让模型加载一次处理几百条,而且发生在不用机器的时段。"
+        "代价:噪音行会在库里多待几个小时才被降权 —— 但它们写入时 "
+        "importance 就是 0.3,低于 0.5 的检索门槛,这几个小时里也浮不出来。",
+    )
+    noise_filter_batch_limit: int = Field(
+        default=2000, ge=1,
+        description="单轮 process_pending 最多处理多少条(HCC_NOISE_FILTER_BATCH_LIMIT)。"
+        "按每天约 800 条积压、每条约 1.5s 估,2000 条约 12 分钟,留足追赶余量。",
+    )
     noise_filter_model: str = Field(
         default="qwen3.5:4b",
         description="Ollama model tag for noise review (HCC_NOISE_FILTER_MODEL). "

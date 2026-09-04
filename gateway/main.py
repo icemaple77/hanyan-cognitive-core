@@ -86,6 +86,20 @@ async def _dream_deep_loop() -> None:
                 continue
             logger.info("dream deep phase starting")
             await DreamEngine().run_deep()
+            # 噪音复核的批处理挂在深度阶段之后(2026-09-05)。
+            # 放这里而不是实时逐条判:逐条判意味着只要公子在跟 agent 聊天,
+            # ollama 就得把 4.7B 的模型拉进内存(4.8 GB)。批处理让模型
+            # 加载一次处理几百条,而且发生在公子不用机器的时段。
+            # 放在 run_deep **之后**:深度阶段自己会写记忆,让它写完再一起过,
+            # 免得刚写的行等到明天才被复核。
+            try:
+                from core.noise_filter_events import process_pending
+                stats = await process_pending()
+                logger.info("dream deep: noise_filter batch %s", stats)
+            except Exception:
+                # 噪音复核失败绝不能让 dreaming 这一轮算失败 —— 积压会在
+                # 下一轮自动补上(待办集合是"没有标签"算出来的,天然可重试)
+                logger.exception("dream deep: noise_filter batch failed")
         except asyncio.CancelledError:
             raise
         except Exception:

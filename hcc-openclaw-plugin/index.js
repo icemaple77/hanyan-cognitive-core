@@ -684,12 +684,46 @@ export default {
     const MEMORY_DUMP_RE =
       /匹配度\s*\d|── 匹配度|\[OpenClaw tool_result:|source=(?:openclaw_sync|openclaw_plugin|mcp|hermes)\b/;
 
+    // 工具产出**从来**没有价值的:历史 4269 条 tool_result 里,这三类工具
+    // 共 174 条,**100% 被噪音过滤判为丢弃、零保留**(2026-09-05 用真实库统计)。
+    // 它们的输出本质上是"我做完了"的回执,不是内容。
+    //
+    // 注意 process 和 edit **不在**这里,尽管它们的丢弃率是 95.4% / 96.8% ——
+    // process 是长任务的成果落点,那 4.6% 里有"任务完成报告""调研结论"这类
+    // 真东西;edit 的例外则全是 "Successfully replaced N block(s)",
+    // 交给下面的锚定正则精确处理,比整类砍掉安全。
+    const TOOL_RESULT_NEVER_PERSIST = new Set(["write", "web_fetch", "message"]);
+
+    // OpenClaw **自己生成**的状态回执(不是命令的输出)。这些是 harness 的
+    // 样板话,任何情况下都不含信息。
+    //
+    // ⚠️ 必须**锚定成"整段正文就是它"**,不能用 `.test(text)` 松匹配:
+    // 一份长报告只要末尾带一句 "Command still running" 就会被误杀 ——
+    // 实测松匹配会打掉 "=== 正式报告 === # Mac 生产机 OpenClaw 升级报告"
+    // 这类真内容(误杀率 8.5%)。锚定之后真误杀为 0。
+    const HARNESS_NOISE_RE =
+      /^(?:\(?\s*no\s+(?:new\s+)?output(?:\s+recorded)?\s*\)?|Command\s+still\s+running\s*\(session[^)]*\)\.?(?:\s*Use\s+process[^\n]*)?|\(?Command\s+(?:exited\s+with\s+code\s+-?\d+|aborted\s+by\s+signal\s+\w+)\)?|Process\s+(?:still\s+running|exited\s+with\s+(?:code\s+-?\d+|signal\s+\w+))\.?|File\s+is\s+empty\s*\(0\s+bytes\)\.?|Successfully\s+(?:wrote\s+\d+\s+bytes\s+to|replaced\s+\d+\s+block\(s\)\s+in)\s+\S+\.?|Skipped\s+due\s+to\s+queued\s+user\s+message\.?|OpenClaw\s+\d[\d.\-]*[^\n]*All\s+your\s+chats[^\n]*)[\s.]*$/i;
+
+    // 整段正文是否只由 1~3 段这类回执拼成(常见组合:
+    // "(no new output)\n\nProcess still running.")
+    const isHarnessNoise = (text) => {
+      const segs = String(text).split(/\n+/).map((x) => x.trim()).filter(Boolean);
+      return segs.length > 0 && segs.length <= 3 && segs.every((x) => HARNESS_NOISE_RE.test(x));
+    };
+
     api.on("tool_result_persist", (event, ctx) => {
       const toolName = event.toolName || ctx.toolName || "unknown_tool";
       if (TOOL_RESULT_PERSIST_DENYLIST.has(toolName)) return;
+      if (TOOL_RESULT_NEVER_PERSIST.has(toolName)) return;
       const text = extractMessageText(event.message);
       if (!text) return;
       if (MEMORY_DUMP_RE.test(text)) return;   // 记忆搜索转储 → 不入库(杜绝递归)
+      // 源头拦截(2026-09-05,公子:「噪音过滤的 4b 模型还是要想办法减负」)。
+      // 在真实历史数据上量过:这两条规则拦下全部写入的 24.3%,
+      // 而被拦下的里面**没有一条**是真内容 —— 曾被 LLM 判 keep 的 21 条,
+      // 逐条看过全是它自己判错的状态回执。
+      // 少写一条 = 省一次 4B 推理(~1.76s)+ 一行库容 + 后续 dreaming 的开销。
+      if (isHarnessNoise(text)) return;
       storeToHcc(baseUrl, {
         userId,
         agentId,
