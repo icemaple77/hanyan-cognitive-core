@@ -263,6 +263,13 @@ class CoreSettings(BaseSettings):
     dream_rem_min_cluster_size: int = Field(
         default=3, ge=2, description="Minimum members for a REM tag-overlap cluster to count as a theme."
     )
+    dream_rem_similarity: float = Field(
+        default=0.75,
+        description="REM 语义聚类的余弦阈值(HCC_DREAM_REM_SIMILARITY)。"
+        "实测依据:窗口内 6352 条记忆两两余弦均值 0.517/p90 0.629/p99 0.722;"
+        "0.75 时平均每条约 7 个邻居(0.70→28 个开始糊成团,0.80→2 个太紧)。"
+        "调高=簇更纯更小,调低=簇更大更杂。",
+    )
     dream_min_score: float = Field(
         default=0.7, ge=0.0, description="Deep phase promotion score threshold (Phase-1 5-signal formula)."
     )

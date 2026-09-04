@@ -345,11 +345,122 @@ class DreamEngine:
             clusters.append(cluster)
         return clusters
 
-    async def run_rem(self, *, force: bool = False) -> dict[str, Any]:
-        """Cluster the last N days of memories by tag overlap; record theme signals.
 
-        Semantic (embedding) clustering is P3 in docs/dreaming-design.md —
-        tag overlap is the documented P0 default for REM.
+    # 管理性标签:它们描述"这行被系统怎么处理过",不描述内容。
+    # 用它们聚类等于按流水线工序分堆 —— 这正是 tag overlap 版退化的根源。
+    _ADMIN_TAG_PREFIXES = ("harvested", "promoted:", "dream-cluster:", "noise_filter",
+                           "auto-knowledge", "stale", "importance-recapped")
+
+    def _cluster_by_embedding(self, memories: list, threshold: float) -> list[list]:
+        """按**语义**聚类(设计文档里的 P3;此前一直用 P0 的 tag overlap 顶着)。
+
+        为什么必须换(2026-09-04 实测):
+          tag overlap 版的判据是 `if tags1 & tags2` —— **共享任意一个标签就并簇**。
+          而几乎每条收割进来的记忆都带 `harvested`,于是第一条把其余 4519 条全吸进
+          同一个"簇"。9/3 那晚的簇大小恰好等于标签人口:
+            harvested(4520) · kanban(693) · noise_filter_v1:done(321) · 完成(46)
+          那不是聚类,是 GROUP BY tag —— REM 本该发现的是**跨天的语义关联**。
+
+        阈值怎么定的:不是拍脑袋。实测窗口内 6352 条(100% 有向量)的两两余弦
+        均值 0.517、p90 0.629、p99 0.722;阈值 0.75 时平均每条 ~7 个邻居
+        (0.70 → 28 个,开始糊成团;0.80 → 2 个,太紧)。故默认 0.75。
+
+        复杂度:每个种子一次 BLAS `X[i] @ X.T`,成员一旦归簇就不再当种子,
+        实测远快于原来的 Python 双重循环。
+        """
+        import numpy as np
+
+        vecs, keep = [], []
+        for m in memories:
+            e = getattr(m, "embedding", None)
+            if e is None:
+                continue
+            vecs.append(np.asarray(e, dtype=np.float32))
+            keep.append(m)
+        if len(keep) < 2:
+            return [[m] for m in memories]
+
+        X = np.vstack(vecs)
+        X /= (np.linalg.norm(X, axis=1, keepdims=True) + 1e-9)
+        n = len(keep)
+        assigned = np.zeros(n, dtype=bool)
+        clusters: list[list] = []
+        for i in range(n):
+            if assigned[i]:
+                continue
+            sims = X @ X[i]
+            members = np.where((sims >= threshold) & (~assigned))[0]
+            assigned[members] = True
+            clusters.append([keep[j] for j in members])
+
+        # 没有向量的行不丢:各自单独成组,交给 min_cluster_size 过滤
+        no_vec = [m for m in memories if getattr(m, "embedding", None) is None]
+        clusters.extend([[m] for m in no_vec])
+        return clusters
+
+    @staticmethod
+    def _theme_name(memory) -> str:
+        """把一条记忆压成人能读的主题名。
+
+        _title() 取的是首行,而首行常常是机器前缀:`[kanban:t_import_5|ready]`、
+        `[OpenClaw tool_result:exec]`、`user:` / `assistant:`。
+        拿那个当主题名等于没说 —— 真正的内容在后面(实测那 138 条讲的是
+        「看板任务新建:《记忆审计/自动清理机制》」)。故剥掉前缀再取。
+        """
+        import re
+
+        def strip(line: str) -> str:
+            line = re.sub(r"^\s*\[[^\]]{0,60}\]\s*", "", line)      # [kanban:…] / [OpenClaw …]
+            line = re.sub(r"^\s*(user|assistant|system)\s*[:：]\s*", "", line, flags=re.I)
+            return line.strip()
+
+        # summary 与 content **都要看**:很多行的 summary 恰好就是那句机器前缀本身
+        # (`[kanban:t_import_5|ready]`),剥完是空的——那就得去 content 里找真话。
+        # 初版只看 summary、且要求剥后 ≥4 字,于是这两类全部回落成原始首行,
+        # 主题名还是一串 ID(实测才发现)。
+        for text in ((memory.summary or ""), (memory.content or "")):
+            for line in text.strip().splitlines():
+                if len(cleaned := strip(line)) >= 2:
+                    return cleaned[:40]
+        raw = ((memory.summary or "") or (memory.content or "")).strip()
+        return raw.splitlines()[0][:40] if raw else "未命名主题"
+
+    def _cluster_label(self, cluster: list) -> str:
+        """给簇起名:用**离质心最近那条的标题**,标签只做兜底。
+
+        为什么不用标签(2026-09-04 实测):换成语义聚类后,十个最大的簇里五个
+        都叫「kanban」—— 那是准确的标签,却一个字没说"这 138 条讲的是什么"。
+        主题名要能让人一眼认出这是哪一簇,而不是它属于哪个抽屉。
+
+        质心最近那条 = 这簇的"代表作",比按 importance 挑更稳:importance 最高的
+        那条可能只是恰好被访问得多,未必最能代表这一簇。
+        """
+        import numpy as np
+
+        vecs = [np.asarray(m.embedding, dtype=np.float32)
+                for m in cluster if getattr(m, "embedding", None) is not None]
+        if vecs:
+            X = np.vstack(vecs)
+            X /= (np.linalg.norm(X, axis=1, keepdims=True) + 1e-9)
+            centroid = X.mean(axis=0)
+            centroid /= (np.linalg.norm(centroid) + 1e-9)
+            rep = [m for m in cluster if getattr(m, "embedding", None) is not None][
+                int((X @ centroid).argmax())
+            ]
+            if title := self._theme_name(rep):
+                return title
+        counts = Counter(
+            t for m in cluster for t in (m.tags or [])
+            if isinstance(t, str) and not t.startswith(self._ADMIN_TAG_PREFIXES)
+        )
+        return counts.most_common(1)[0][0] if counts else "未命名主题"
+
+    async def run_rem(self, *, force: bool = False) -> dict[str, Any]:
+        """按语义聚类最近 N 天的记忆,记主题信号。
+
+        2026-09-04:从 tag overlap(P0 占位)换成 embedding 语义聚类(P3)。
+        换的理由与阈值依据见 _cluster_by_embedding 的注释 —— 一句话:
+        tag overlap 会把带 `harvested` 的 4520 条并成一个"簇"。
         """
         started = datetime.now(timezone.utc).replace(tzinfo=None)
         async with self._session_factory() as session:
@@ -363,9 +474,13 @@ class DreamEngine:
             result = await session.execute(
                 select(Memory).where(Memory.status == MemoryStatus.ACTIVE).where(Memory.created_at >= cutoff)
             )
-            memories = [m for m in result.scalars().all() if m.tags]
+            # 语义聚类不再要求"必须有标签"——那是 tag overlap 时代的前提,
+            # 而没打标签的记忆恰恰可能是最该被发现的那些。
+            memories = list(result.scalars().all())
 
-            clusters = self._cluster_by_tag_overlap(memories)
+            clusters = self._cluster_by_embedding(
+                memories, getattr(self._settings, "dream_rem_similarity", 0.75)
+            )
             min_size = self._settings.dream_rem_min_cluster_size
             big_clusters = [c for c in clusters if len(c) >= min_size]
 
@@ -373,8 +488,7 @@ class DreamEngine:
             signals_added = 0
             cluster_summaries: list[dict[str, Any]] = []
             for cluster in big_clusters:
-                tag_counts = Counter(t for m in cluster for t in (m.tags or []))
-                top_tag = tag_counts.most_common(1)[0][0] if tag_counts else "未命名主题"
+                top_tag = self._cluster_label(cluster)
                 cluster_summaries.append(
                     {"tag": top_tag, "size": len(cluster), "memory_ids": [m.id for m in cluster]}
                 )
