@@ -1,0 +1,408 @@
+[
+ {
+  "id": "0740f3ce-c3de-4b18-8b06-f235ab08ca24",
+  "importance": 0.9999999999999999,
+  "type": "tool_result",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw tool_result:exec] === 5月15日记忆里的诗 ===\n- **邮箱**：icemaple7@gmai"
+ },
+ {
+  "id": "aec082e6-9aaa-4030-9c80-218d4927bf0d",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=a062ba2b-0466-4228-8014-5b1e09b6d0ea ag"
+ },
+ {
+  "id": "100554e4-a4a0-4d7d-a1c1-02fe443a2923",
+  "importance": 0.9999999999999999,
+  "type": "tool_result",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw tool_result:exec] === sse_monitor 如何托管 ===\nmichael  1171101 "
+ },
+ {
+  "id": "a5571425-06c5-4572-bd47-d7f010c21d80",
+  "importance": 0.7,
+  "type": "tool_result",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw tool_result:exec] === 把 moss 加进内置 import ===\n✅ moss 已加入内置 im"
+ },
+ {
+  "id": "ac6fe73a-8800-4570-bf61-a043a0173f25",
+  "importance": 0.9999999999999999,
+  "type": "tool_result",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw tool_result:exec] 32480   11:11   0.0 claude -p --dangerousl"
+ },
+ {
+  "id": "bf93c621-384a-4a5b-ac0e-a6371a350f90",
+  "importance": 0.8999999999999999,
+  "type": "tool_result",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw tool_result:exec] 全长 3868s @ 32000Hz\n参考音1: 60min 处 20s, RMS="
+ },
+ {
+  "id": "e1645b97-ab49-4665-9991-31f9e91b73fa",
+  "importance": 0.6,
+  "type": "tool_result",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw tool_result:exec] loaded: list[str] = []\n    for raw in dirs"
+ },
+ {
+  "id": "3e6736f4-dab3-4ba1-85eb-044ae8549bf5",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=74f887e7-a19c-469e-b1f1-75de6efb0611 ag"
+ },
+ {
+  "id": "fd7d4d32-c13f-42ee-9dc7-934d77fa3404",
+  "importance": 0.7999999999999999,
+  "type": "tool_result",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw tool_result:exec] phoenix26.synology.me blog_backend;\n      "
+ },
+ {
+  "id": "d9ce9416-844a-415e-abd4-db5ca8a95472",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=11f8ddd2-5dc5-409f-9f46-c6a9237bba0e ag"
+ },
+ {
+  "id": "747bc7c6-0a4c-480b-9d87-70b79eb31d9d",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=70cf74c1-8ef6-4288-a535-1af2a76b33ec ag"
+ },
+ {
+  "id": "0ba4f8cd-c0f6-4c6d-a32f-a7ecfcb8d6eb",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=8c1630aa-930c-4355-b29c-adcc7669b90a ag"
+ },
+ {
+  "id": "43a6b69c-0aca-4fc4-9a9b-817e38d9036b",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=62befb85-8457-4f0b-b55b-511ade417e0c ag"
+ },
+ {
+  "id": "ce3b2567-8756-4a12-9310-e36402c57f6f",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=c8e7ca28-18f5-431f-b60f-42dfb9bfa34c ag"
+ },
+ {
+  "id": "695dba27-26aa-4538-be3c-96e912adb2ad",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=edb4d7a4-c2c8-47fe-9cd4-c9b56d76fc54 ag"
+ },
+ {
+  "id": "1eef1406-8b24-49c8-ae3c-b7fa123a99b8",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=f1880370-a30e-4118-bc08-ce59110c7420 ag"
+ },
+ {
+  "id": "b30fa06f-4fa8-42f8-b6a6-736568e67e81",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=0eabf2b0-ef26-4170-83d0-455b31289fe4 ag"
+ },
+ {
+  "id": "c1b1723a-7894-4a1c-a2b1-1ad6303a9228",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=ee5facc7-f8bd-4376-a0ae-e05a7f273097 ag"
+ },
+ {
+  "id": "6b1d5542-ffbc-4fd8-9b03-ec3721918df7",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=e12431b6-737a-4470-ac2e-5d74682bee74 ag"
+ },
+ {
+  "id": "d70f327e-a938-4e57-bf0c-da1c97772284",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=d288d6a9-6047-4e0e-9e98-6ef5a9618a1b ag"
+ },
+ {
+  "id": "a9142710-0337-4d76-8189-491be44c74f4",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=0e0625ac-ccf2-4c4b-9aa9-ce7b54449a7d ag"
+ },
+ {
+  "id": "31abea2b-eecd-499e-9fe6-5c5a3b9c1e7b",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=7866ca1f-6f56-4b1a-a476-327df796cfce ag"
+ },
+ {
+  "id": "02f93691-acc2-428c-86df-cd32d82b68a2",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=f968d97e-b14b-42f3-9bc7-42a6ee4b6c1d ag"
+ },
+ {
+  "id": "06f5cfdb-fad0-4abe-b163-4faf94e1be8c",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=00e78c04-13cb-4333-a164-fffd030e9058 ag"
+ },
+ {
+  "id": "f24d92b8-f093-4b90-8006-1dee7fd5343f",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=03e239c1-1f90-499b-b477-382eb3522a8f ag"
+ },
+ {
+  "id": "856ec89c-7c80-4f55-b42e-0d54707a75aa",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=85bf553e-fbb8-4359-b47e-eb788d062f5a ag"
+ },
+ {
+  "id": "dc083122-d75b-4272-bd28-59e6f3d20ceb",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=e9c57ba5-38ad-432c-9ad0-06fcc5c928b0 ag"
+ },
+ {
+  "id": "128595f3-0d1e-4ce5-882b-9990f2c785b3",
+  "importance": 0.5,
+  "type": "conversation",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=604d4309-692a-4647-a112-b61f6723823e\nus"
+ },
+ {
+  "id": "6fe5f167-45dd-41ed-ab31-f55cc241a020",
+  "importance": 0.5,
+  "type": "conversation",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=6f1f869e-ab7b-4d0b-ac4c-849bf256bd9c\nus"
+ },
+ {
+  "id": "0e2c0ef1-29a9-4b4c-b322-5cc8f63d3e8b",
+  "importance": 1.0,
+  "type": "tool_result",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw tool_result:exec] === 总剧本开头 ===\n# 《千年之约》完整剧本\n\n> 题材：科幻 · 爱情 ·"
+ },
+ {
+  "id": "7310782f-9f66-4022-8506-1cb7a9686598",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=175c0562-9a3b-4e9d-8e19-17414d96727d ag"
+ },
+ {
+  "id": "7f6f385d-fa09-46ea-9c08-518b426f05d7",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=6f1f869e-ab7b-4d0b-ac4c-849bf256bd9c ag"
+ },
+ {
+  "id": "932a1df2-819f-4f6d-9439-7fc9bfdd6626",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=5a8778ce-72e6-4abb-bd63-d8d3fcb1b5ed ag"
+ },
+ {
+  "id": "9e86a632-5df1-4423-b836-820bdce48ef3",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=2114da47-2d3e-4e4c-ab1a-e1ba010b82b4 ag"
+ },
+ {
+  "id": "dde06735-e8b6-4fa5-bcfa-48f301f84b58",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=868f56ab-0b8e-4541-9f4d-40ad1ad26b0f ag"
+ },
+ {
+  "id": "49326714-f39e-49f1-ad10-7f0a180002cc",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=cac65ee2-3336-4b79-8aaf-34a6fe7128e7 ag"
+ },
+ {
+  "id": "fe105d37-a30a-44aa-830d-956f9efee1b5",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=80a0fc58-2994-4666-b3a7-8e6773ce69eb ag"
+ },
+ {
+  "id": "c44474fd-5b48-4223-bdb3-a1fb8d86ed82",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=1947fca6-bebc-415d-8a32-c7a40f48af9b ag"
+ },
+ {
+  "id": "700746f3-f882-46a5-9ac8-add296e5d9e1",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=31a50cab-b9c6-47bd-a1cc-eba6041efe50 ag"
+ },
+ {
+  "id": "5ef71499-f761-4696-85ee-5bdf3693e36b",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=984af758-ed0b-4e04-b01c-5949bfbd9937 ag"
+ },
+ {
+  "id": "4b33aa87-ef82-4c51-9fcd-c8c8505ccd5f",
+  "importance": 0.5,
+  "type": "conversation",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=4d347d20-45b2-4955-a027-22222a1f3f2c\nus"
+ },
+ {
+  "id": "7b469917-b6c4-4dd2-9e23-01f319423ca0",
+  "importance": 0.5,
+  "type": "conversation",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=5e336196-2fa6-4236-9142-ba6d7d9212d7\nus"
+ },
+ {
+  "id": "d96a9786-a013-484a-863b-cc169740b3ae",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=b2206673-a7c5-465b-943e-d310804ab891 ag"
+ },
+ {
+  "id": "b1cba368-7bc4-48cf-b35c-a92f4c24a3fe",
+  "importance": 0.9999999999999999,
+  "type": "tool_result",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw tool_result:exec] /home/michael/.openclaw/workspace/memory/d"
+ },
+ {
+  "id": "d1d54c91-ba03-4ac3-8669-b84a134d7365",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=8de366c5-4417-4722-8061-995f09fafb43 ag"
+ },
+ {
+  "id": "a6ac46d2-1d1f-4a23-89c0-e80dd712324b",
+  "importance": 0.5,
+  "type": "conversation",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=80a0fc58-2994-4666-b3a7-8e6773ce69eb\nus"
+ },
+ {
+  "id": "d8335a50-76f4-4988-aa16-c0afed361a8b",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=56673ed0-abdd-4945-bfa9-bba7f7e1bef8 ag"
+ },
+ {
+  "id": "ebbabee5-dd50-4309-9f31-9fa48299ce8a",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=e111010d-686e-4137-9bc3-e5fa3d640098 ag"
+ },
+ {
+  "id": "696727da-6d0b-4483-bad2-9ade730db8e2",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=799fecfb-d3b3-49cf-8bc6-925f22787c2e ag"
+ },
+ {
+  "id": "92df2b5b-c6d6-48f2-8564-e0010e58f044",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=d7b0c3fe-c61a-4b15-9b89-47221392aefb ag"
+ },
+ {
+  "id": "e8f177f4-20ac-42bf-99a8-7cbe93acaecd",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=ca0c9e17-c7ce-4afd-9c2a-8587b9bf965a ag"
+ },
+ {
+  "id": "dff04e2c-766b-4530-8ab9-272b1baa11c9",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=0c461c10-b1a6-404d-bb16-afe00c9228a9 ag"
+ },
+ {
+  "id": "6b208944-63c3-4adc-a9d4-4417067d8206",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=db65786e-d1ad-40c2-aa23-89c2063209ac ag"
+ },
+ {
+  "id": "f370c162-0103-427b-b2ae-30d132ce8dd2",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=33287529-bd88-414f-827e-68d57fd97acd ag"
+ },
+ {
+  "id": "f54bf99d-11a3-445f-9765-a13f1ff9ae77",
+  "importance": 1.0,
+  "type": "tool_result",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw tool_result:exec] === 成片 ===\n  \n320  单集\n1536  镜头\n512  归档\n320"
+ },
+ {
+  "id": "3c3a8834-ef38-404d-a2c6-b77c673881b2",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=0d7cce59-cc76-4754-9fda-5df941813d1b ag"
+ },
+ {
+  "id": "e11ee7e7-9989-4600-acb3-2cdf1dc9c3aa",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=700d7d58-44c7-449c-a73b-6d6f6303f413 ag"
+ },
+ {
+  "id": "77557e8e-318b-4a36-bf37-1e5b9484fbb5",
+  "importance": 0.5,
+  "type": "session",
+  "source": "openclaw_plugin",
+  "head": "[OpenClaw session_end] session=6ae3e114-58e7-4fd8-bdf8-002ed4018090 ag"
+ }
+]
