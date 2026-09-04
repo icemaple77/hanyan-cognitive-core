@@ -42,13 +42,28 @@ class PromptBuilder:
     """
 
     #: Default top-to-bottom section ordering.
+    #:
+    #: **按"易变程度"排,最稳的在前、最易变的在后** —— 这是为前缀缓存排的,
+    #: 不是为可读性排的(2026-09-04,公子提醒「注入尾部不要影响缓存命中」)。
+    #:
+    #: 缓存吃的是**最长公共前缀**:某一块变了,它后面的全部作废。所以:
+    #:   system / personality  几乎不变        → 最前
+    #:   memory / knowledge    随 query 变,但一轮内稳定
+    #:   conversation          **只增不改**——上一轮的文本原样保留,天然可缓存
+    #:   emotion               **每轮都变**(16 维 + 语气指令 + 提醒)→ 必须最后
+    #:
+    #: 原顺序把 emotion 放在第 3 位,于是每轮情绪一动,后面的 memory + knowledge +
+    #: conversation 全部掉出缓存 —— 而 conversation 通常是最大的一块。
+    #: 把 emotion 挪到末尾后,可缓存前缀一直延伸到上一轮对话结尾。
+    #:
+    #: 顺带一个好处:行为指令放在最后,模型的近因效应反而让它更听话。
     DEFAULT_SECTION_ORDER: tuple[str, ...] = (
         "system",
         "personality",
-        "emotion",
         "memory",
         "knowledge",
         "conversation",
+        "emotion",
     )
 
     def __init__(self, *, section_order: tuple[str, ...] | None = None) -> None:
