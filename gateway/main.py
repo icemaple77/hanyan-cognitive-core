@@ -214,6 +214,19 @@ async def lifespan(app: FastAPI):
         # documents 死了 5 天没人知道)。不一致时大声报错并挂到 /health,但不拒绝
         # 启动——HCC 不能挂,宁可响铃也不停机。见 gateway/core/vector_guard.py。
         await check_vector_dims(conn, core_settings.embedding_dim)
+    # 嵌入后端 + torch 是否在场,启动时就报出来。
+    # 为什么值得占一行日志(2026-09-04):provider 从 sentence-transformers 换成
+    # soul 之前,gateway 进程里长驻一整套 torch,RSS 被批量任务顶到 2.6G 且不归还。
+    # 那种退化**完全无声** —— 检索照常出结果,只是内存多吃 2G。所以把它变成
+    # 一条开机就能看见的事实,而不是需要 lsof 才能发现的状态。
+    import sys as _sys
+    logger.info(
+        "embedding backend=%s model=%s dim=%s · 进程内 torch=%s",
+        core_settings.embedding_provider, core_settings.embedding_model,
+        core_settings.embedding_dim,
+        "在场(注意内存)" if "torch" in _sys.modules else "不在场",
+    )
+
     bus = await get_event_bus().connect()
     logger.info("EventBus connected (backend=%s)", bus.backend)
 

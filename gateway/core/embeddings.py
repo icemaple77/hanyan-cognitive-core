@@ -4,6 +4,7 @@ Supports:
 - hash: deterministic hash-based (fallback, no model needed)
 - ollama: Ollama embedding API (recommended for local use)
 - sentence-transformers: local model (best quality, needs GPU)
+- soul: 向 HanyanOS 的 soul 器官要向量,自己进程里不驻留模型(省 1.5G+,见 _embed_soul)
 
 Config via HCC_EMBEDDING_PROVIDER, HCC_EMBEDDING_MODEL, HCC_EMBEDDING_DIM.
 """
@@ -77,7 +78,9 @@ def embed_text(text: str, dim: int = EMBEDDING_DIM, is_query: bool = False) -> l
     asymmetric retrieval). Store-side callers leave it False; the query path in
     hybrid_search passes True.
     """
-    if EMBEDDING_PROVIDER == "ollama":
+    if EMBEDDING_PROVIDER == "soul":
+        return _embed_soul(text, is_query)
+    elif EMBEDDING_PROVIDER == "ollama":
         return _embed_ollama(text)
     elif EMBEDDING_PROVIDER == "sentence-transformers":
         return _embed_sentence(text, dim, is_query)
@@ -127,6 +130,66 @@ def _embed_ollama(text: str) -> list[float]:
     )
     resp.raise_for_status()
     return resp.json()["embedding"]
+
+
+def _embed_soul(text: str, is_query: bool = False) -> list[float]:
+    """向 soul 器官要向量 —— 模型只在 soul 的进程里驻留一份。
+
+    为什么(公子 2026-09-04 问「HCC 为什么占 3G」之后选的方案 B):
+
+      gateway 自己 import sentence_transformers 就意味着进程里长驻一整套
+      torch。实测归因:torch 173MB + sentence_transformers 191MB + bge 权重
+      27MB + 一次 encode 的工作区 +338MB + jieba 70MB ≈ 817MB 底子。更要命的
+      是**批量 encode 的高水位不归还**:256 条 +537MB、150 篇长文 +730MB,
+      del + gc.collect() 之后一分不退(torch 的分配器只还给自己的缓存池,
+      不还给系统)。今天跑过全库重嵌入 + 文档重索引,于是 RSS 停在 2.4G。
+
+      而 soul 进程里本来就驻留着**同一个** bge(它的冻结骨干)。两份同模型
+      是纯浪费。骨干只由 soul 持有,gateway 走 HTTP 要向量,于是:
+        - gateway 回到 200~300MB,再不会被批量任务顶起来
+        - 少一份 bge
+      这也正是 P0-a「共用同一份骨干 → 增量只有 6MB」那条结论铺的路,
+      parity 已经验过(余弦 0.999999881)。
+
+    ⚠️ 三条**不能省**的一致性检查,理由和 _embed_ollama 那段警告是同一条:
+    往同一个 pgvector 列里写来自另一个向量空间的向量会永久污染它。所以
+
+      1. 查询指令**在这一侧拼**(和 _embed_sentence 完全一样的时机),
+         端点故意不接 is_query —— 指令在两边都拼就一定会漂
+      2. 模型名不符就 raise。soul 哪天换了骨干,宁可让写入落 NULL,
+         也不能悄悄混进第二个空间(vector_guard 正是查这个)
+      3. 维度不符就 raise
+
+    失败时**抛异常**,不退化成别的后端:MemoryService.create 会接住并存 NULL,
+    hybrid_search 会退成纯 BM25 —— 这是既有的正确姿势。
+    """
+    import httpx
+
+    if is_query and EMBEDDING_QUERY_INSTRUCTION:
+        text = EMBEDDING_QUERY_INSTRUCTION + text
+
+    resp = httpx.post(
+        f"{core_settings.soul_service_url.rstrip('/')}/soul/embed",
+        json={"texts": [text]},
+        timeout=30,   # 不用 soul_service_timeout(2s):那是给情绪感知的,
+                      # 感知可以降级,嵌入降级就是丢向量
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    model = data.get("model")
+    if model != EMBEDDING_MODEL:
+        raise RuntimeError(
+            f"soul 报的骨干是 {model!r},HCC 这一列是 {EMBEDDING_MODEL!r} —— "
+            "拒绝写入,否则同一列里会混进两个向量空间"
+        )
+    vectors = data.get("vectors") or []
+    if len(vectors) != 1 or len(vectors[0]) != EMBEDDING_DIM:
+        raise RuntimeError(
+            f"soul 返回 {len(vectors)} 条 / {len(vectors[0]) if vectors else 0} 维,"
+            f"期望 1 条 / {EMBEDDING_DIM} 维"
+        )
+    return vectors[0]
 
 
 def _embed_sentence(text: str, dim: int, is_query: bool = False) -> list[float]:

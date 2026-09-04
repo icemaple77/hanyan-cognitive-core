@@ -218,16 +218,33 @@ def parse_qmd_file(path: Path) -> QMDDocument | None:
     summary = ""
     content_lines: list[str] = []
     title_taken = False
+    summary_taken = False
+    seen_body = False
     for line in body.splitlines():
         stripped = line.strip()
         if not title_taken and stripped.startswith("# "):
             title = stripped[2:].strip()
             title_taken = True
             continue
-        if not content_lines and stripped.startswith(">"):
-            # Blockquote summary line emitted right after the title.
+        if not summary_taken and not seen_body and stripped.startswith(">"):
+            # 生成器在标题后紧跟一行引用块摘要。
+            #
+            # ⚠️ 这个判断曾经写作 `if not content_lines` —— 那是一个撑爆记忆的 bug
+            # (2026-09-04 查出)。标题行被上面的 continue 吃掉后,紧随其后的**空行**
+            # 已经进了 content_lines,于是轮到摘要行时 `not content_lines` 已为假,
+            # 摘要没被剥掉、混进了 content。
+            #
+            # 后果不是"多一行",而是无界自增:摘要进 DB → 生成器把摘要再写一遍 →
+            # 下一轮又并进 DB → 每轮多一份。查出来时「公子的一生回忆录·第一章口述」
+            # 里同一个 336 字符的块重复了 **10367 次**,单条 3.48 MB;
+            # 76 条这样的记忆吃掉了全库 61 MB 正文里的 54 MB。
+            #
+            # 所以判断依据必须是"有没有见过**实质**正文",空行不算。
             summary = stripped.lstrip(">").strip()
+            summary_taken = True
             continue
+        if stripped:
+            seen_body = True
         content_lines.append(line)
 
     content = "\n".join(content_lines).strip()

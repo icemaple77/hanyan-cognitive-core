@@ -18,6 +18,28 @@ logger = logging.getLogger(__name__)
 DEFAULT_IMPORTANCE_DECAY = 0.05  # 5% decay per period
 DECAY_PERIOD_HOURS = 24  # one decay unit = 1 day
 ARCHIVE_THRESHOLD = 0.15  # below this → archive
+
+# 受保护的记忆:永不衰减、永不归档、永不删除。
+#
+# 公子 2026-09-04 定的规格,原话:「我的回忆录 重要性最高 永不降低 永不归档」。
+# 靠"把 importance 设成 1.0"是**不够**的 —— 衰减是 importance × 0.95^(天数/7),
+# 1.0 只是起点高,两年不访问照样跌破归档线。所以做成结构性豁免:
+# 带这些标签的记忆在 process() 里直接短路,衰减公式根本作用不到它身上。
+#
+# 用标签而不加一列,是因为这个库的标签本来就在承载控制语义
+# (promoted:deep:*、source:openclaw_sync 之类),而且标签会随 QMD 往返保留,
+# 不会因为一次同步就把豁免弄丢。
+PROTECTED_TAGS = frozenset({
+    "protected",       # 通用:人工钉住
+    "回忆录",           # 公子的一生·口述记录
+    "公子的一生",
+    "永久承诺",
+})
+
+
+def is_protected(memory: dict[str, Any]) -> bool:
+    """这条记忆是否受保护(永不衰减/归档/删除)。"""
+    return bool(set(memory.get("tags") or []) & PROTECTED_TAGS)
 DELETE_THRESHOLD = 0.05  # below this → delete
 PROMOTION_BOOST = 0.1  # each access boosts importance
 
@@ -96,6 +118,20 @@ class ForgetEngine:
         importance = memory.get("importance", 0.5)
         access_count = memory.get("access_count", 0)
 
+        # 受保护的记忆:在任何衰减/归档判断**之前**短路返回。
+        # 放这么早是有意的 —— decayed_importance 也必须原样报出 importance,
+        # 否则任何读这个字段回写库的调用方仍然会把它降下去。
+        if is_protected(memory):
+            return {
+                "id": memory.get("id"),
+                "forget_score": 0.0,
+                "decayed_importance": importance,   # 不降
+                "days_since_access": round(days_since_access, 1),
+                "access_count": access_count,
+                "suggested_action": "keep",
+                "protected_by": sorted(set(memory.get("tags") or []) & PROTECTED_TAGS),
+            }
+
         forget_score = self.calculate_forget_score(importance, access_count, days_since_access)
 
         # Apply decay to importance
@@ -155,7 +191,10 @@ class ForgetEngine:
         access_count = memory.get("access_count", 0)
         days_since_created = max(0.0, (now - created_dt).total_seconds() / 86400)
         days_since_access = max(0.0, (now - access_dt).total_seconds() / 86400)
-        forget_score = self.calculate_forget_score(importance, access_count, days_since_access)
+        # 受保护的记忆遗忘分恒为 0:这里只是展示,但展示一个不会被采用的高分
+        # 会让人以为它快被忘了
+        forget_score = 0.0 if is_protected(memory) else self.calculate_forget_score(
+            importance, access_count, days_since_access)
 
         return MemoryStats(
             id=memory.get("id", ""),

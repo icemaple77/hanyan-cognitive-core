@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     database_url: str = "postgresql+asyncpg://hcc:hcc@localhost:5432/hcc"
-    api_host: str = "0.0.0.0"
+    api_host: str = "127.0.0.1"
     api_port: int = 8000
     debug: bool = False
 

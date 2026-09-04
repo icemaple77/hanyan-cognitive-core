@@ -31,7 +31,11 @@ class CoreSettings(BaseSettings):
         default="postgresql+asyncpg://hcc:hcc@localhost:5432/hcc",
         description="Postgres/pgvector DSN (HCC_DATABASE_URL).",
     )
-    api_host: str = Field(default="0.0.0.0", description="Gateway 监听地址。")
+    # 只听本机。tailnet 上的客户端(aicore 的 openclaw)走
+    # `tailscale serve --tcp 8000`,由 tailscaled 转发到这里 ——
+    # 这样局域网/公网网卡上没有 8000,而 100.66.103.69:8000 照常可达,
+    # openclaw.json 里的地址一个字都不用改(2026-09-04 收口)。
+    api_host: str = Field(default="127.0.0.1", description="Gateway 监听地址。")
     api_port: int = Field(default=8000, description="Gateway 监听端口。")
     debug: bool = Field(default=False, description="调试模式。")
 
@@ -44,8 +48,18 @@ class CoreSettings(BaseSettings):
     # provider 默认值也从 "hash" 改为真实模型:hash 兜底会静默产生无意义向量,
     # 宁可在 .env 缺失时用对的模型,也不要悄悄写垃圾进库。
     embedding_provider: str = Field(
-        default="sentence-transformers",
-        description="嵌入后端:sentence-transformers | ollama | hash(仅测试)。",
+        # 默认值定成 soul,理由是**复发防线**而不是偏好:.env 一旦没被读到
+        # (这个仓库真出过这事——见 gateway/core/embeddings.py 顶上那段
+        # load_dotenv 注释),默认值就是实际生效值。默认成
+        # sentence-transformers 就意味着"配置一丢,torch 悄悄回到进程里,
+        # RSS 回到 2.6G",而且没有任何报错提示。默认成 soul 时同样的失误
+        # 只会让嵌入调用**失败**(soul 没起就 raise → 记忆存 NULL、检索退 BM25),
+        # 吵闹的失败比安静的内存膨胀好。
+        default="soul",
+        description="嵌入后端:soul | sentence-transformers | ollama | hash(仅测试)。"
+        "**soul 是 2026-09-04 起的推荐值**:向 HanyanOS 的 soul 器官要向量,"
+        "本进程不驻留 torch —— soul 本来就驻留着同一个 bge 骨干,两份纯浪费,"
+        "而且 torch 批量 encode 的内存高水位不归还系统(实测 gateway 被顶到 2.4G)。",
     )
     embedding_model: str = Field(
         default="BAAI/bge-base-zh-v1.5", description="嵌入模型 id。"
@@ -356,8 +370,12 @@ class CoreSettings(BaseSettings):
         description="Master switch for the neural perception source (HCC_SOUL_SERVICE_ENABLED).",
     )
     soul_service_url: str = Field(
-        default="http://127.0.0.1:8732",
-        description="Base URL of the soul_encoder inference service on umbrella (HCC_SOUL_SERVICE_URL).",
+        default="http://127.0.0.1:9000",
+        description="Base URL for reaching soul (HCC_SOUL_SERVICE_URL). "
+        "2026-09-04 起指向 **HanyanOS core 的前门**,不再直连 soul 的 8732:"
+        "soul 改成监听 Unix socket(~/.hanyan/run/soul.sock)不再占端口,"
+        "而 core 代理整棵 /soul/ 子树。这也是设计稿 §八 的原意——core 是唯一前门。"
+        "路径不变(/soul/perceive、/soul/state、/soul/encode),只换基址。",
     )
     soul_service_timeout: float = Field(
         default=2.0,
