@@ -20,3 +20,4 @@ scripts/_kanban_dedup_*.json
 
 # 2026-09-04
 scripts/_qmd_bloat_snapshot_*.json   # 修膨胀前的全文快照,单份 100MB+,是运维产物不是代码
+scripts/_dream_dedupe_snapshot_*.json  # 去重前全文快照,运维产物

@@ -618,7 +618,23 @@ class DreamEngine:
                     cluster.append(m2)
                     assigned.add(m2.id)
             if len(cluster) >= 2:
-                key = "adhoc-" + hashlib.sha1(",".join(sorted(x.id for x in cluster)).encode()).hexdigest()[:8]
+                # ⚠️ key **不能**用成员 id 的精确集合去哈希。
+                #
+                # 原来是 sha1(",".join(sorted(成员 id)))[:8]。后果:簇的身份等于
+                # 它的精确成员集,而成员集每晚必变(新记忆进来、旧的被归档),
+                # 于是 key 每晚都变 → _upsert_knowledge 找不到上一条,
+                # 每晚新建一条内容几乎相同的巩固记忆,旧的还留着。
+                #
+                # 查证(2026-09-05):26 组**全文逐字相同**、共 103 条,
+                # 其中「公子质疑模型未切换…」12 天里造了 13 次。
+                # 和 QMD 往返那个 bug 同族 —— 不幂等的任务永远在产出重复。
+                #
+                # 改用**最早那条成员的 id** 当锚:簇里最老的成员是它的稳定核心
+                # (新成员会加进来,但最老的那条不会凭空变),于是同一个话题
+                # 每晚落在同一个 key 上,走 update 而不是 insert。
+                # 万一最老那条被归档,key 变一次、然后重新稳定 —— 比每晚都变好得多。
+                anchor = min(cluster, key=lambda x: (x.created_at or datetime.max, x.id))
+                key = f"adhoc-{anchor.id}"
                 groups[key] = cluster
             else:
                 groups[f"solo-{m1.id}"] = cluster
