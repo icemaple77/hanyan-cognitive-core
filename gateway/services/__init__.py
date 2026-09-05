@@ -192,14 +192,16 @@ class MemoryService:
 
         Multiplies each item's ``rrf_score`` by a recency-decay factor
         (``0.5 ** (age_days / half_life)``, see ``retrieval_recency_half_life_days``)
-        and a per-``Memory.source`` weight (``retrieval_source_weights``), then
-        re-sorts. Multiplicative, not a replacement, so topical relevance from
+        , a per-``Memory.source`` weight (``retrieval_source_weights``) and
+        ``importance ** retrieval_importance_exponent``, then re-sorts. Multiplicative, not a replacement, so topical relevance from
         BM25+vector stays the dominant signal — this only breaks ties/near-ties
         in favor of newer, non-bulk-migrated memories.
         """
         if not fused:
             return
-        if not core_settings.retrieval_recency_weighting_enabled and not core_settings.retrieval_source_weights:
+        exp = core_settings.retrieval_importance_exponent
+        if (not core_settings.retrieval_recency_weighting_enabled
+                and not core_settings.retrieval_source_weights and exp <= 0):
             return
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -207,6 +209,10 @@ class MemoryService:
         for item in fused:
             memory = item["memory"]
             weight = core_settings.retrieval_source_weights.get(memory.source, 1.0)
+            if exp > 0:
+                # importance 参与重排。此前它完全不参与,后果见 config 里那段注释:
+                # 0.95 的策展知识被 0.4 的对话碎片压到第 6。
+                weight *= max(0.05, memory.importance or 0.5) ** exp
             if core_settings.retrieval_recency_weighting_enabled and memory.created_at:
                 age_days = max(0.0, (now - memory.created_at).total_seconds() / 86400.0)
                 weight *= 0.5 ** (age_days / half_life)

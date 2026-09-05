@@ -465,6 +465,22 @@ class CoreSettings(BaseSettings):
     # already-fused rrf_score (multiplicatively, not a replacement — topical
     # relevance from BM25+vector stays the primary signal) by how old a
     # memory is and where it came from.
+    retrieval_importance_exponent: float = Field(
+        default=0.5, ge=0.0, le=3.0,
+        description="检索重排里 importance 的指数(HCC_RETRIEVAL_IMPORTANCE_EXPONENT)。"
+        "rrf_score 乘以 importance**exponent;0 = 关闭(老行为)。\n"
+        "2026-09-05 加的,起因很直白:一条 importance 0.95 的策展知识"
+        "(跨运行时变更总账)在真实查询里**排第 6**,压在它上面的是五条 "
+        "importance 0.4、还带 stale 标签的 harvester 对话碎片。"
+        "排序此前只看 recency + source,importance 完全不参与 —— "
+        "于是「这条重要」这件事对检索毫无影响,策展知识被闲聊淹没。\n"
+        "和 recency 一样是**乘性**的:主排序仍由 BM25+向量的话题相关度决定,"
+        "importance 只在近似平局时把该浮的顶上来。指数而非线性是为了让强度可调 —— "
+        "0.5 是实测校准出来的:在 6 条真实查询上比过 0/0.5/1.0 —— "
+        "0.5 把「变更总账」和「soul 设计」这两条从被噪音淹没救回第 1,"
+        "而身份锚点/回忆录/联络链/承诺这四条本来就正确的**一位没动**;"
+        "1.0 则开始让 importance 盖过话题相关度(查「永久承诺」时把紧急联络链顶到第 2)。",
+    )
     retrieval_recency_weighting_enabled: bool = Field(
         default=True,
         description="Master switch for exponential recency decay applied to "

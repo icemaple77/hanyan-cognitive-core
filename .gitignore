@@ -19,5 +19,8 @@ scripts/_lowtrust_before_*.json
 scripts/_kanban_dedup_*.json
 
 # 2026-09-04
-scripts/_qmd_bloat_snapshot_*.json   # 修膨胀前的全文快照,单份 100MB+,是运维产物不是代码
-scripts/_dream_dedupe_snapshot_*.json  # 去重前全文快照,运维产物
+# 修数据前的全文快照(单份 100MB+),是运维产物不是代码。
+# ⚠️ .gitignore **不支持行尾注释** —— `#` 后面的内容会被当成 pattern 的一部分,
+# 规则就永远匹配不上。注释必须自成一行(2026-09-05 踩到,原来那两条一直没生效)。
+scripts/_qmd_bloat_snapshot_*.json
+scripts/_dream_dedupe_snapshot_*.json
