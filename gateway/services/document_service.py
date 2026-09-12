@@ -16,7 +16,7 @@ from typing import Optional
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.core.fts import tokenize_for_fts
+from gateway.core.fts import tokenize_for_fts, BM25_MAX_QUERY_TOKENS
 from gateway.core.rerank import RERANK_ENABLED, rerank as rerank_fn
 from gateway.core.embeddings import EMBEDDING_MODEL
 from gateway.core.rrf import reciprocal_rank_fusion
@@ -146,6 +146,10 @@ class DocumentService:
         tokens = tokenize_for_fts(query)
         if not tokens:
             return []
+
+        # Same stack-depth guard as MemoryService.keyword_search_bm25 — see
+        # gateway.core.fts.BM25_MAX_QUERY_TOKENS.
+        tokens = " ".join(tokens.split()[:BM25_MAX_QUERY_TOKENS])
 
         # 用存好的生成列而不是现算 to_tsvector(search_text):后者会让 PG 为每个命中
         # 行重新解析全文,ORDER BY rank 更逼它对所有命中行都算——实测 891ms → 0.588ms。

@@ -20,7 +20,17 @@ import re
 
 import jieba
 
-__all__ = ["tokenize_for_fts", "build_search_text"]
+__all__ = ["tokenize_for_fts", "build_search_text", "BM25_MAX_QUERY_TOKENS"]
+
+# BM25 query width cap (used by MemoryService/DocumentService keyword search).
+# ``plainto_tsquery`` ANDs every token together, so a very long query (e.g. a
+# whole chat message forwarded as the search text) builds a tsquery whose
+# executor recursion exceeds Postgres' ``max_stack_depth`` and raises
+# ``asyncpg.exceptions.StatementTooComplexError: stack depth limit exceeded`` —
+# which failed /api/v1/context outright (observed 2026-09-12 with ~20k+ char
+# queries). An AND over hundreds of tokens also matches nothing in practice, so
+# capping is strictly better for recall too.
+BM25_MAX_QUERY_TOKENS = 128
 
 _HAS_WORDCHAR_RE = re.compile(r"\w", re.UNICODE)
 

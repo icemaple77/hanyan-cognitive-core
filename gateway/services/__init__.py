@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import core_settings
 from gateway.core.embeddings import EMBEDDING_MODEL, embed_text, memory_embedding_text
 from gateway.core.events import publish_conflict_event
-from gateway.core.fts import tokenize_for_fts
+from gateway.core.fts import tokenize_for_fts, BM25_MAX_QUERY_TOKENS
 from gateway.core.rerank import RERANK_ENABLED, rerank as rerank_fn
 from gateway.core.rrf import reciprocal_rank_fusion
 from gateway.models import Memory, MemoryConflict
@@ -273,6 +273,11 @@ class MemoryService:
         tokens = tokenize_for_fts(query)
         if not tokens:
             return []
+
+        # Cap token count so the AND-tree can't exceed Postgres' stack depth
+        # (see BM25_MAX_QUERY_TOKENS). Keep the leading tokens: they carry the
+        # actual search intent, trailing ones are usually pasted context/log.
+        tokens = " ".join(tokens.split()[:BM25_MAX_QUERY_TOKENS])
 
         # plainto_tsquery (not websearch_to_tsquery): tokens are already
         # segmented by us, and plainto_tsquery has no special operator syntax

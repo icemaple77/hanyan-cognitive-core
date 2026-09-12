@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
 
 from dotenv import load_dotenv
@@ -67,6 +68,15 @@ def document_embedding_text(title: str | None, content: str | None) -> str:
 
 _TOKEN_RE = re.compile(r"\w+")
 
+# Ollama's embedding endpoint rejects prompts longer than the model's context
+# ("the input length exceeds the context length" -> HTTP 500). Observed
+# 2026-09-12 with >=20k-char inputs: every hybrid-search fell back to BM25-only
+# and any long memory stored without a vector. The OpenClaw plugin forwards the
+# whole user message as the search query, so this fires on ordinary chat turns.
+# Truncate instead of failing — the leading ~4k chars carry the semantics for
+# both storage and retrieval. Override with HCC_EMBEDDING_MAX_CHARS.
+EMBEDDING_MAX_CHARS = int(os.getenv("HCC_EMBEDDING_MAX_CHARS", "4000"))
+
 # Cache for loaded model
 _model_cache: dict = {}
 
@@ -78,6 +88,8 @@ def embed_text(text: str, dim: int = EMBEDDING_DIM, is_query: bool = False) -> l
     asymmetric retrieval). Store-side callers leave it False; the query path in
     hybrid_search passes True.
     """
+    if text and len(text) > EMBEDDING_MAX_CHARS:
+        text = text[:EMBEDDING_MAX_CHARS]
     if EMBEDDING_PROVIDER == "soul":
         return _embed_soul(text, is_query)
     elif EMBEDDING_PROVIDER == "ollama":
