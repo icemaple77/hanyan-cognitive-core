@@ -105,6 +105,10 @@ cd ~/workspace/HanyanOS/body/live2d/pet && HANYAN_PET_RENDERER=stretch npm start
 `HANYAN_PET_ROAM=1`(到处走,默认站着)、`HANYAN_PET_FREEZE=1`(调试冻结)。
 右键角色:换装 / 自由走动 / 心情 / 退出;`Cmd+Shift+Q` 强退。
 
+换装是统一衣柜:有 `<id>.stretch` 的服装自动切骨骼渲染器(能走),只有 `<id>-a25d.psd`
+的自动切表情渲染器(只动脸),后者强制关闭自由走动。骨骼版只保留 T-pose 黑裙一套,
+其余只动脸——公子确认可以接受。
+
 ## 坑(全是实际踩过的)
 
 | # | 症状 | 正解 |
