@@ -120,7 +120,9 @@ cd ~/workspace/HanyanOS/body/live2d/pet && HANYAN_PET_RENDERER=stretch npm start
 | 9 | 脖子挡住挂脖裙肩带 | 层序 `neck` 要在 `topwear` 下面 |
 | 10 | Electron 加载 ES 模块被 CORS 挡 | esbuild 打成 IIFE 单文件 |
 | 11 | 走路时鞋子脱节 | 交叉站姿的原图左右腿重叠、鞋归错腿。**用 T-pose 原图绑定**(四肢完全分开),显示时用 `setRestPose('tpose')` 把胳膊转下来 |
-| 12 | 腿变成一个 `bothLegs` 节点,走不了路 | 双腿并拢时连通域分不开左右,先跑 `tools/split-legs.py` 沿中线竖直切 |
+| 12 | 腿变成一个 `bothLegs` 节点,走不了路 | 双腿并拢时连通域分不开左右,先跑 `tools/split-legs.py` 沿中线竖直切(只对双腿平行的站姿有效,交叉站姿切了会归错) |
+| 13 | **转头时头从脖子上飞出去** | DWPose 不给 head 设支点,导出默认值 (640,1280) 在画布底边。加载时检测到支点在底部就挪到 neck 支点(播放器 `fixHeadPivot`) |
+| 14 | GPT 改衣服后脸漂了 | 开了 `input_fidelity: "high"` 也会漂。先出一张给公子核对;补救用 `graft-hires-face.py` 把原图脸部图层移植过去,不用再花钱重生成 |
 
 **关键认识**:绑定姿势和显示姿势不是同一个。T-pose 是最好的绑定素材(四肢不重叠、
 分层最干净),绑完在运行时把胳膊转下来即可。
