@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -23,6 +23,131 @@ const CACHE_INVALIDATE_MARKER = path.join(HCC_EVENTS_DIR, "cache_invalidate.mark
 // Effective timeout, overridable via config/env (see resolveConfig). hccFetch
 // falls back to this when a call doesn't pass timeoutMs explicitly.
 let activeFetchTimeoutMs = DEFAULT_FETCH_TIMEOUT_MS;
+
+// ── HCC SSE 事件流常驻监听（2026-09-10 由 sse_monitor.py 内建化） ─────────────
+// 订阅 HCC 网关事件流：memory.created/updated/deleted 落本地变更索引并 touch
+// cache_invalidate.marker，供上面的 turnContextCache 提前失效。插件活它就活，
+// 不再依赖外挂脚本 + launchd。
+const HCC_STREAM_URL = process.env.HCC_STREAM_URL || `${DEFAULT_BASE_URL}/api/v1/events/stream`;
+const HCC_EVENTS_LOG = path.join(HCC_EVENTS_DIR, "hcc-events.log");
+const HCC_EVENTS_STATE = path.join(HCC_EVENTS_DIR, "last_event.json");
+const MEMORY_CHANGES_FILE = path.join(HCC_EVENTS_DIR, "memory_changes.jsonl");
+const MEMORY_CHANGES_MAX_LINES = 2000;
+const SSE_RECONNECT_DELAY_MS = 5000;
+const SSE_CONNECT_TIMEOUT_MS = 20000;
+const MEMORY_EVENT_TYPES = new Set(["memory.created", "memory.updated", "memory.deleted"]);
+
+function startHccEventMonitor(log, streamUrl) {
+  let stopped = false;
+  let controller = null;
+  const recent = new Map();
+
+  const seenBefore = (eventType, data) => {
+    const key = `${eventType}|${data?.memory_id ?? ""}|${data?.timestamp ?? ""}`;
+    if (recent.has(key)) return true;
+    recent.set(key, true);
+    if (recent.size > 500) recent.delete(recent.keys().next().value);
+    return false;
+  };
+
+  const trimMemoryChanges = async () => {
+    try {
+      const lines = (await readFile(MEMORY_CHANGES_FILE, "utf8")).split("\n").filter(Boolean);
+      if (lines.length <= MEMORY_CHANGES_MAX_LINES * 1.5) return;
+      await writeFile(MEMORY_CHANGES_FILE, `${lines.slice(-MEMORY_CHANGES_MAX_LINES).join("\n")}\n`, "utf8");
+    } catch {}
+  };
+
+  const handleEvent = async (eventType, data) => {
+    const ts = new Date().toISOString();
+    const entry = { ts, event: eventType, data };
+    try {
+      await mkdir(HCC_EVENTS_DIR, { recursive: true });
+      await appendFile(HCC_EVENTS_LOG, `${JSON.stringify(entry)}\n`, "utf8");
+      await writeFile(HCC_EVENTS_STATE, JSON.stringify(entry, null, 2), "utf8");
+    } catch {}
+    if (!MEMORY_EVENT_TYPES.has(eventType) || seenBefore(eventType, data)) return;
+    const record = {
+      ts,
+      event: eventType,
+      memory_id: data?.memory_id,
+      action: data?.action,
+      user_id: data?.user_id,
+      agent_id: data?.agent_id,
+      type: data?.type,
+      tags: data?.tags,
+      importance: data?.importance,
+      memory_source: data?.memory_source,
+    };
+    try {
+      await appendFile(MEMORY_CHANGES_FILE, `${JSON.stringify(record)}\n`, "utf8");
+      await trimMemoryChanges();
+      await writeFile(CACHE_INVALIDATE_MARKER, record.ts, "utf8");
+      log?.info?.(`[hcc-memory] SSE ${eventType} -> cache invalidated`);
+    } catch (err) {
+      log?.error?.(`[hcc-memory] SSE marker write failed: ${err?.message ?? err}`);
+    }
+  };
+
+  const listenOnce = async () => {
+    controller = new AbortController();
+    const connectTimer = setTimeout(() => controller.abort(), SSE_CONNECT_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(streamUrl, { headers: { Accept: "text/event-stream" }, signal: controller.signal });
+    } finally {
+      clearTimeout(connectTimer);
+    }
+    if (!res.ok || !res.body) throw new Error(`SSE HTTP ${res.status}`);
+    log?.info?.(`[hcc-memory] SSE connected: ${streamUrl}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let eventName = "message";
+    let dataLines = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, idx).replace(/\r$/, "");
+        buf = buf.slice(idx + 1);
+        if (line === "") {
+          if (dataLines.length > 0) {
+            const payload = dataLines.join("\n");
+            let parsed = null;
+            try { parsed = JSON.parse(payload); } catch { parsed = { raw: payload }; }
+            await handleEvent(eventName, parsed);
+          }
+          eventName = "message";
+          dataLines = [];
+        } else if (line.startsWith("event:")) {
+          eventName = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trimStart());
+        }
+      }
+    }
+  };
+
+  void (async () => {
+    while (!stopped) {
+      try {
+        await listenOnce();
+      } catch (err) {
+        if (!stopped) log?.warn?.(`[hcc-memory] SSE disconnected: ${err?.message ?? err}; retry in ${SSE_RECONNECT_DELAY_MS / 1000}s`);
+      }
+      if (stopped) break;
+      await new Promise(resolve => setTimeout(resolve, SSE_RECONNECT_DELAY_MS));
+    }
+  })();
+
+  return () => {
+    stopped = true;
+    try { controller?.abort(); } catch {}
+  };
+}
 
 function resolveConfig(api) {
   const cfg = api.pluginConfig || {};
@@ -433,6 +558,10 @@ export default {
     // only; writes/emotion keep `agentId`.
     const searchAgentId = crossAgentSearch ? null : agentId;
     const log = api.logger || console;
+
+    // 内建 SSE 事件监听（替代外挂 sse_monitor.py；随插件生命周期起停）
+    const stopHccEventMonitor = startHccEventMonitor(log, HCC_STREAM_URL);
+    api.on?.("shutdown", () => { try { stopHccEventMonitor(); } catch {} });
 
     api.registerTool({
       name: "memory_search",

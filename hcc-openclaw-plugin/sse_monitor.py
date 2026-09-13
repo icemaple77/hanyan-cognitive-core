@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# ⚠️ 2026-09-10 起已废弃：SSE 监听已内建进 index.js（startHccEventMonitor），
+# 由 OpenClaw 插件生命周期管理。不要再手动/launchd 拉起本脚本——会与插件
+# 双写 hcc-events.log / memory_changes.jsonl 与 cache_invalidate.marker。
+# 保留此文件仅供查阅历史实现。
 """
 HCC SSE 事件流常驻监听器
 订阅 http://100.66.103.69:8000/api/v1/events/stream
