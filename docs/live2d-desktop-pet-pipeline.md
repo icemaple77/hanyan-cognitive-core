@@ -1,7 +1,7 @@
 # 含烟 Live2D 桌宠 · 从零复现
 
 > 一张原图 → 桌面上会动、会走路的含烟。任何人照着这份文档都能重跑一遍。
-> 实现仓库:`~/workspace/HanyanOS/body/live2d`(tag `v0.1.1`~`v0.1.6`)
+> 实现仓库:`~/workspace/HanyanOS/body/live2d`(tag `v0.1.1`~`v0.1.9`)
 > Obsidian 同步版:`~/workspace/AICore/digital-human/live2d-pipeline.md`
 
 ## 铁律:不要用 AI 生成或修改含烟的图
@@ -126,8 +126,8 @@ cd ~/workspace/HanyanOS/body/live2d/pet && HANYAN_PET_RENDERER=stretch npm start
 | 11 | 走路时鞋子脱节 | 交叉站姿的原图左右腿重叠、鞋归错腿。**用 T-pose 原图绑定**(四肢完全分开),显示时用 `setRestPose('tpose')` 把胳膊转下来 |
 | 12 | 腿变成一个 `bothLegs` 节点,走不了路 | 双腿并拢时连通域分不开左右,先跑 `tools/split-legs.py` 沿中线竖直切(只对双腿平行的站姿有效,交叉站姿切了会归错) |
 | 13 | **转头时头从脖子上飞出去** | DWPose 不给 head 设支点,导出默认值 (640,1280) 在画布底边。加载时检测到支点在底部就挪到 neck 支点(播放器 `fixHeadPivot`) |
-| 14 | GPT 改衣服后脸漂了 | 开了 `input_fidelity: "high"` 也会漂。先出一张给公子核对;补救用 `graft-hires-face.py` 把原图脸部图层移植过去,不用再花钱重生成 |
-| 15 | 薄纱衣服在深色桌面上腿部蒙灰雾 | 原图白底,薄纱被解成接近不透明的浅灰(中位 alpha 251)。`tools/fix-sheer.py` 按低饱和度+偏亮选中,色度拉到衣服本色、不透明度 ×0.45。按 alpha 挑像素或整层调色都选不中它 |
+| 14 | GPT 改衣服后脸漂了 | 开了 `input_fidelity: "high"` 也会漂。先出一张给公子核对,别批量;事后移植原图的脸也救不回来(见 16) |
+| 15 | 薄纱衣服在深色桌面上腿部蒙灰雾 | 原图白底,薄纱被解成接近不透明的浅灰(中位 alpha 251)。`tools/fix-sheer.py` 按低饱和度+偏亮选中,色度拉到衣服本色、不透明度 ×0.25(公子嫌 ×0.45 不够透)。按 alpha 挑像素或整层调色都选不中它 |
 | 16 | 原图的脸移植到 AI 生成的身体上 | **行不通**:生成图头型/发际线/耳朵位置都不同,移植后额头露肤色带、耳朵错位。`graft-hires-face.py` 只适用于同一原图的两种裁剪;要新服装的骨骼版只能找公子要真实 T-pose 原图 |
 
 **关键认识**:绑定姿势和显示姿势不是同一个。T-pose 是最好的绑定素材(四肢不重叠、
