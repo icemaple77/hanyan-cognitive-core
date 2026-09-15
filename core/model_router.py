@@ -59,11 +59,6 @@ HARDWARE_PROFILES: dict[str, dict[str, Any]] = {
         "planner": "qwen3:14b", "embedding": "bge-m3",
         "max_parallel": 2, "dream_enabled": True,
     },
-    "n100": {
-        "memory": "qwen3:8b", "emotion": "qwen3:8b", "dream": "qwen3:8b",
-        "planner": "qwen3:8b", "embedding": "bge-m3",
-        "max_parallel": 1, "dream_enabled": False,
-    },
     "rtx4090": {
         "memory": "qwen3:32b", "emotion": "qwen3:8b", "dream": "qwen3:72b",
         "planner": "gpt-4o", "embedding": "bge-m3",

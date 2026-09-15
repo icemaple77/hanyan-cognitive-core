@@ -2,8 +2,10 @@ import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const DEFAULT_BASE_URL = "http://100.66.103.69:8000";
-const SOUL_BASE_URL = "http://100.66.103.69:8732"; // soul 实时情绪(方案A): Mac MLX 17维
+// HCC 和 soul 都跑在本机（OpenClaw 网关同机），直连回环地址，不绕 Tailscale；需要时用环境变量覆盖。
+const DEFAULT_BASE_URL = "http://127.0.0.1:8000";
+// soul v2 是 HanyanOS core 监督下的器官，走 Unix socket、不开 TCP 端口，只经 core(:9000) 的 /soul/* 同源代理对外。
+const SOUL_BASE_URL = process.env.HCC_SOUL_URL || "http://127.0.0.1:9000"; // soul 实时情绪(方案A): Mac MLX
 const DEFAULT_USER_ID = "michael";
 const DEFAULT_AGENT_ID = "openclaw";
 const DEFAULT_SESSION_RECALL_LIMIT = 5;
@@ -28,7 +30,7 @@ let activeFetchTimeoutMs = DEFAULT_FETCH_TIMEOUT_MS;
 // 订阅 HCC 网关事件流：memory.created/updated/deleted 落本地变更索引并 touch
 // cache_invalidate.marker，供上面的 turnContextCache 提前失效。插件活它就活，
 // 不再依赖外挂脚本 + launchd。
-const HCC_STREAM_URL = process.env.HCC_STREAM_URL || `${DEFAULT_BASE_URL}/api/v1/events/stream`;
+const HCC_STREAM_URL = process.env.HCC_STREAM_URL || `${(process.env.HCC_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "")}/api/v1/events/stream`;
 const HCC_EVENTS_LOG = path.join(HCC_EVENTS_DIR, "hcc-events.log");
 const HCC_EVENTS_STATE = path.join(HCC_EVENTS_DIR, "last_event.json");
 const MEMORY_CHANGES_FILE = path.join(HCC_EVENTS_DIR, "memory_changes.jsonl");
@@ -407,6 +409,11 @@ function lastUserMessageText(messages) {
   return "";
 }
 
+// soul 服务不在线时的退避：失败后 5 分钟内不再请求，只在状态切换时记一条日志，避免每轮对话刷 error。
+const SOUL_RETRY_AFTER_MS = 5 * 60 * 1000;
+let soulDownUntil = 0;
+let soulDown = false;
+
 async function fetchTurnContextBlock(baseUrl, { userId, agentId }, query, log) {
   try {
     const data = await hccFetch(baseUrl, "/context", {
@@ -416,7 +423,7 @@ async function fetchTurnContextBlock(baseUrl, { userId, agentId }, query, log) {
     let text = String(data?.context || "").trim();
     // 方案A: soul 实时情绪直读——对"当前这句用户消息"调 soul 编码器拿 17 维
     // 情绪, 拼进 appendContext 尾部。失败静默(不影响记忆块), 不阻塞对话。
-    if (query) {
+    if (query && Date.now() >= soulDownUntil) {
       try {
         const soul = await hccFetch(SOUL_BASE_URL, "/soul/encode", {
           method: "POST",
@@ -450,8 +457,16 @@ async function fetchTurnContextBlock(baseUrl, { userId, agentId }, query, log) {
         if (parts.length) {
           text += (text ? "\n" : "") + "[对这句话的即时感受] " + parts.join(" | ");
         }
+        if (soulDown) {
+          soulDown = false;
+          log.info?.("[hcc-memory] soul encode recovered");
+        }
       } catch (err) {
-        log.error?.(`[hcc-memory] soul encode failed: ${err.message}`);
+        soulDownUntil = Date.now() + SOUL_RETRY_AFTER_MS;
+        if (!soulDown) {
+          soulDown = true;
+          log.warn?.(`[hcc-memory] soul encode unavailable (${err.message}); skipping emotion for ${SOUL_RETRY_AFTER_MS / 60000} min between retries`);
+        }
       }
     }
     return text.length > APPEND_CONTEXT_MAX_CHARS ? text.slice(0, APPEND_CONTEXT_MAX_CHARS) : text;
@@ -540,7 +555,8 @@ const MemoryGetSchema = {
 // `kind: "memory"` is declared here AND in openclaw.plugin.json, and the
 // production config assigns the memory slot to this plugin
 // (`plugins.slots.memory: "hcc-memory"`, memory-core disabled). The slot is
-// deliberately owned: hcc-memory is the memory backend for OpenClaw on n100.
+// deliberately owned: hcc-memory is the memory backend for OpenClaw on the Mac mini
+// (same host as HCC; N100 is retired and no longer runs OpenClaw).
 // If you ever want to coexist with memory-core instead, remove `kind` from
 // both files and drop the slot assignment, then registerMemoryCapability
 // below will no-op (it's already guarded).
@@ -561,7 +577,8 @@ export default {
 
     // 内建 SSE 事件监听（替代外挂 sse_monitor.py；随插件生命周期起停）
     const stopHccEventMonitor = startHccEventMonitor(log, HCC_STREAM_URL);
-    api.on?.("shutdown", () => { try { stopHccEventMonitor(); } catch {} });
+    // OpenClaw 2026.9.x 的插件生命周期钩子是 gateway_stop（"shutdown" 不再是合法的 typed hook，会被忽略）
+    api.on?.("gateway_stop", () => { try { stopHccEventMonitor(); } catch {} });
 
     api.registerTool({
       name: "memory_search",

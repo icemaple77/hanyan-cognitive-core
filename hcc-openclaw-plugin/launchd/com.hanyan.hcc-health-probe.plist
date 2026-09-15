@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- HCC health probe on the Mac mini (same host as HCC and OpenClaw). Loops every 30s; replaces the N100 systemd unit. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.hanyan.hcc-health-probe</string>
+  <key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>/Users/michael/workspace/projects/HCC/hcc-openclaw-plugin/hcc_health_probe.py</string></array>
+  <key>EnvironmentVariables</key><dict><key>HCC_HEALTH_URL</key><string>http://127.0.0.1:8000/api/v1/health</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>/Users/michael/Library/Logs/hcc/health-probe.log</string>
+  <key>StandardErrorPath</key><string>/Users/michael/Library/Logs/hcc/health-probe.log</string>
+</dict>
+</plist>

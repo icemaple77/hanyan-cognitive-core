@@ -18,6 +18,7 @@
 | `hcc_health_probe.py` | 常驻脚本 | 每 30s 探测 HCC `/api/v1/health`，检测挂掉/半死状态，写状态文件供其他脚本判断 |
 | `hcc_backup.py` | 定时脚本 | 分页拉取 HCC 全部记忆，存为本地 JSONL 快照，保留最近 14 天 |
 | `hcc_backfill.py` | 手动/定时脚本 | HCC 故障期间本地产生的记忆事件，恢复后批量回灌回 HCC |
+| `launchd/*.plist` | macOS launchd | 在 Mac mini 上常驻健康探针（`com.hanyan.hcc-health-probe`）、每日 03:30 记忆快照（`com.hanyan.hcc-memory-snapshot`） |
 | `DESIGN.md` | 设计文档 | dreaming 对齐设计 + HCC 不可用时的 fallback 方案（含健康探针/本地暂存/回灌） |
 
 ## 功能
@@ -31,7 +32,7 @@
 
 ## 安装
 
-1. 把本目录复制或软链到 OpenClaw 的插件目录（具体路径取决于你的 OpenClaw 版本和配置，本仓库生产部署路径为 `~/hcc-openclaw-plugin`）。
+1. 让 OpenClaw 加载本目录。当前生产部署：OpenClaw 与 HCC 同在 Mac mini 上，OpenClaw 直接从本仓库目录 `~/workspace/projects/HCC/hcc-openclaw-plugin` 加载插件，改完代码重启 OpenClaw 网关即可生效，无需同步副本（N100 部署已于 2026-09-15 退役，`sync-to-n100.sh` 已移除）。
 2. 确认 `package.json` 中的 `openclaw.extensions` 指向 `index.js`。
 3. 在 OpenClaw 的插件配置里给 `hcc-memory` 传入 `configSchema` 声明的字段（见下）。
 4. 启动 OpenClaw，插件会在 `onStartup` 时自动激活。
@@ -42,7 +43,7 @@
 
 | 配置项 | 环境变量 | 默认值 | 说明 |
 |:-------|:---------|:-------|:-----|
-| `baseUrl` | `HCC_BASE_URL` | `http://100.66.103.69:8000` | HCC 网关地址，跨主机部署时必须显式配置为 HCC 实际监听地址 |
+| `baseUrl` | `HCC_BASE_URL` | `http://127.0.0.1:8000` | HCC 网关地址（默认同机）；OpenClaw 与 HCC 不在同一台机器时必须显式配置 |
 | `userId` | `HCC_USER_ID` | `michael` | 记忆归属的 user_id |
 | `agentId` | `HCC_AGENT_ID` | `openclaw` | 记忆归属的 agent_id |
 | `sessionRecallEnabled` | `HCC_SESSION_RECALL_DISABLED` | `true`（启用） | 关闭则设为 `false` / 环境变量 `1` |
@@ -50,7 +51,9 @@
 | `emotionEnabled` | `HCC_EMOTION_DISABLED` | `true`（启用） | 情绪 warm-start / `session_end` 情绪回写开关 |
 | `fetchTimeoutMs` | `HCC_FETCH_TIMEOUT_MS` | `8000` | 单次 HCC API 调用的中止超时（毫秒），防止 HCC 半死时拖住 prompt 构建 |
 
-旁路脚本（`sse_monitor.py` / `hcc_health_probe.py` / `hcc_backup.py` / `hcc_backfill.py`）各自读取以下环境变量，均有 `100.66.103.69:8000` 兜底默认值：
+soul 情绪读数走 HanyanOS core 前门：`HCC_SOUL_URL`，默认 `http://127.0.0.1:9000`（soul v2 走 Unix socket，不开 TCP 端口）。
+
+旁路脚本（`sse_monitor.py` / `hcc_health_probe.py` / `hcc_backup.py` / `hcc_backfill.py`）各自读取以下环境变量，均以本机 `http://127.0.0.1:8000` 为默认值。事件流监听已内建进插件（`index.js` 随网关起停），`sse_monitor.py` 仅在插件之外单独需要时使用：
 
 | 脚本 | 环境变量 |
 |:-----|:---------|

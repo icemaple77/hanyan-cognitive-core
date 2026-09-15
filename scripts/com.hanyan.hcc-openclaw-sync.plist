@@ -16,10 +16,10 @@
      Stop:     launchctl unload ~/Library/LaunchAgents/com.hanyan.hcc-openclaw-sync.plist
      Or use scripts/install_openclaw_sync.sh, which does the same two steps.
 
-     Before installing: confirm this doesn't duplicate work already done by
-     ~/.openclaw/scripts/memory-bridge.js on the N100 host (pid 5934 there,
-     not present on this Mac and not in this repo — see the P2-10 task note;
-     unverified in this session, needs a direct check on N100). -->
+     Before installing: OpenClaw now runs on this Mac mini with the hcc-memory
+     plugin owning the memory slot (conversation memory is written straight to
+     HCC), so first confirm this periodic sync is still needed and won't
+     double-ingest. N100 and its memory-bridge.js are retired (2026-09-15). -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>

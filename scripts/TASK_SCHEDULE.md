@@ -57,7 +57,8 @@ launchctl load ~/Library/LaunchAgents/com.hanyan.hcc-task-driver.plist
 要收紧:设 `HCC_SPAWN_CMD`(如加 `--allowedTools`),或接 hermes/openclaw 自己的开会话机制。
 要把升级路由到飞书/微信:设 `HCC_NOTIFY_CMD`(prompt 从 stdin 进)。
 
-## openclaw / n100
+## openclaw(Mac mini 本机)
 
-n100 上的 openclaw 用它自己的定时机制,照 `scripts/task_driver.sh` 的三步(poll due → wake → spawn/escalate)
-在它的运行时里实现等价驱动即可;REST 面(`/api/v1/tasks/*`)跨运行时通用。
+openclaw 与 HCC 同在这台 Mac mini 上(N100 已退役)。openclaw 用它自己的定时机制(`openclaw cron`),
+照 `scripts/task_driver.sh` 的三步(poll due → wake → spawn/escalate)在它的运行时里实现等价驱动即可;
+REST 面(`/api/v1/tasks/*`,本机 `http://127.0.0.1:8000`)跨运行时通用。

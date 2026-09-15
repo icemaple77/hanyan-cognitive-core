@@ -14,7 +14,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.header import Header
 
-HEALTH_URL = os.environ.get("HCC_HEALTH_URL", "http://100.66.103.69:8000/api/v1/health")
+HEALTH_URL = os.environ.get("HCC_HEALTH_URL", "http://127.0.0.1:8000/api/v1/health")
 STATE_FILE = "/tmp/hcc_probe_state.json"
 LOG_FILE = os.path.expanduser("~/.openclaw/workspace/memory/hcc-events/probe.log")
 INTERVAL = 30  # 秒

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily JSONL snapshot of HCC memories via REST (hcc_backup.py), 03:30 on the Mac mini; replaces the N100 cron job.
+     Complements com.hanyan.hcc-backup (database-level backup at 04:45). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.hanyan.hcc-memory-snapshot</string>
+  <key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>/Users/michael/workspace/projects/HCC/hcc-openclaw-plugin/hcc_backup.py</string></array>
+  <key>EnvironmentVariables</key><dict><key>HCC_BASE_URL</key><string>http://127.0.0.1:8000</string></dict>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>/Users/michael/Library/Logs/hcc/memory-snapshot.log</string>
+  <key>StandardErrorPath</key><string>/Users/michael/Library/Logs/hcc/memory-snapshot.log</string>
+</dict>
+</plist>

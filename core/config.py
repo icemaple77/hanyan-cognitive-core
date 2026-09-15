@@ -372,7 +372,7 @@ class CoreSettings(BaseSettings):
     soul_service_url: str = Field(
         default="http://127.0.0.1:9000",
         description="Base URL for reaching soul (HCC_SOUL_SERVICE_URL). "
-        "2026-09-04 起指向 **HanyanOS core 的前门**,不再直连 soul 的 8732:"
+        "2026-09-04 起指向 **HanyanOS core 的前门**,不再直连 soul:"
         "soul 改成监听 Unix socket(~/.hanyan/run/soul.sock)不再占端口,"
         "而 core 代理整棵 /soul/ 子树。这也是设计稿 §八 的原意——core 是唯一前门。"
         "路径不变(/soul/perceive、/soul/state、/soul/encode),只换基址。",

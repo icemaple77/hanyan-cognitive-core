@@ -20,7 +20,7 @@ import glob
 import datetime
 import urllib.request
 
-HCC_BASE = os.environ.get("HCC_BASE_URL", "http://100.66.103.69:8000")
+HCC_BASE = os.environ.get("HCC_BASE_URL", "http://127.0.0.1:8000")
 USER_ID = os.environ.get("HCC_USER_ID", "michael")
 AGENT_ID = os.environ.get("HCC_AGENT_ID", "openclaw")
 WORKSPACE = os.path.expanduser("~/.openclaw/workspace")

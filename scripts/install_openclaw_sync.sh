@@ -3,8 +3,8 @@
 # NOT run automatically by anything — a human runs this deliberately.
 #
 # Before running: read scripts/com.hanyan.hcc-openclaw-sync.plist's header
-# comment and confirm this doesn't duplicate ~/.openclaw/scripts/memory-bridge.js
-# on the N100 host, which was not reachable/inspectable from this session.
+# comment. OpenClaw runs on this Mac mini with hcc-memory as its memory slot,
+# so confirm the periodic sync is still needed (N100 is retired).
 set -euo pipefail
 
 PLIST_NAME="com.hanyan.hcc-openclaw-sync.plist"

@@ -5,7 +5,7 @@
 # 保留此文件仅供查阅历史实现。
 """
 HCC SSE 事件流常驻监听器
-订阅 http://100.66.103.69:8000/api/v1/events/stream
+订阅 http://127.0.0.1:8000/api/v1/events/stream
 将记忆变更事件 (store/update/delete) 实时归档到本地日志,
 并把它们变成 OpenClaw 侧可消费的"最近变更索引" + 缓存失效信号 (P3-2)。
 """
@@ -17,7 +17,7 @@ import time
 import datetime
 import urllib.request
 
-STREAM_URL = os.environ.get("HCC_STREAM_URL", "http://100.66.103.69:8000/api/v1/events/stream")
+STREAM_URL = os.environ.get("HCC_STREAM_URL", "http://127.0.0.1:8000/api/v1/events/stream")
 LOG_DIR = os.path.expanduser("~/.openclaw/workspace/memory/hcc-events")
 LOG_FILE = os.path.join(LOG_DIR, "hcc-events.log")
 STATE_FILE = os.path.join(LOG_DIR, "last_event.json")
