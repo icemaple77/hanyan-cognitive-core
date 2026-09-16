@@ -18,10 +18,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime
+import json
 import os
 import sys
 
 import asyncpg
+
+# 删掉的行先原样落盘(公子的规矩:不做不可逆的删除)
+EXPORT_DIR = os.path.expanduser("~/Backups/hcc-audit-tables")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -48,6 +53,15 @@ async def main(apply: bool) -> None:
             size = await conn.fetchval(f"select pg_size_pretty(pg_total_relation_size('{table}'))")
             print(f"{table:<18} 共 {total:>7} 行 / {size:<8} 超过 {days} 天的 {stale:>7} 行", end="")
             if apply and stale:
+                # 删之前先原样导出到 ~/Backups/hcc-audit-tables/ —— 这个脚本要挂
+                # 定时任务,无人值守地删数据,必须自带后路。
+                os.makedirs(EXPORT_DIR, exist_ok=True)
+                out = os.path.join(EXPORT_DIR, f"{table}-older-{days}d-{datetime.date.today()}.jsonl")
+                rows = await conn.fetch(f"select * from {table} where {where}")
+                with open(out, "w", encoding="utf-8") as fh:
+                    for row in rows:
+                        fh.write(json.dumps({k: str(v) for k, v in dict(row).items()}, ensure_ascii=False) + "\n")
+                print(f" → 已导出 {len(rows)} 行到 {out}", end="")
                 await conn.execute(f"delete from {table} where {where}")
                 await conn.execute(f"vacuum (analyze) {table}")
                 after = await conn.fetchval(f"select pg_size_pretty(pg_total_relation_size('{table}'))")

@@ -419,9 +419,12 @@ class CoreSettings(BaseSettings):
         "importance 就是 0.3,低于 0.5 的检索门槛,这几个小时里也浮不出来。",
     )
     noise_filter_batch_limit: int = Field(
-        default=2000, ge=1,
+        default=4000, ge=1,
         description="单轮 process_pending 最多处理多少条(HCC_NOISE_FILTER_BATCH_LIMIT)。"
-        "按每天约 800 条积压、每条约 1.5s 估,2000 条约 12 分钟,留足追赶余量。",
+        "2000 这个旧值是按 4b、每条 1.5s、每天约 800 条积压定的(2000 条约 12 分钟)。"
+        "2026-09-16 两件事都变了:换成蒸馏的 0.8b 后每条 0.47s,而复核范围从"
+        "tool_result 扩到 conversation/openclaw_memory/chatroom,日均积压涨到"
+        "一两千条。4000 条约 31 分钟,仍在夜里跑得完,给积压留一倍追赶余量。",
     )
     noise_filter_model: str = Field(
         default="qwen3.5:4b",
