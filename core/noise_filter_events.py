@@ -48,6 +48,15 @@ logger = logging.getLogger(__name__)
 LOW_TRUST_TYPES = {"tool_result"}
 LOW_TRUST_SOURCES = {"openclaw_plugin"}
 
+# 2026-09-16:降噪模型换成蒸馏的 0.8B(nf-filter:0.8b-r2,单条 0.5s、常驻 0.83GB)后,
+# 复核范围不再受 4B 的成本约束,于是把一直没过滤过的会话类也纳入复核。
+# 依据是实测而非推测:800 条抽样、27B+35B 双裁判取一致项(665 条),该模型在
+# conversation 上准确率 91.7%、openclaw_memory 96.1%(实验与报告见
+# ~/workspace/experiments/nf-distill-20260915/)。
+# 故意不含 general/fact(噪音只占 16%/2%,复核收益抵不过误删风险)与
+# knowledge(dreaming 自己产出的簇摘要,复核它等于复核做梦结果,要另定策略)。
+REVIEW_TYPES = LOW_TRUST_TYPES | {"conversation", "openclaw_memory", "chatroom"}
+
 # Low-trust rows are LOGS, not curated knowledge. Even a keep-verdict must never
 # score them high enough to surface in search: a tool_result that quotes real
 # memories (a search dump) reads as "informative" to the evaluator and used to
@@ -58,7 +67,22 @@ LOW_TRUST_IMPORTANCE_CAP = 0.4
 
 
 def _is_low_trust(payload: dict) -> bool:
+    """日志类:keep 也要封顶 importance。范围保持不变 —— 封顶是给工具日志设的。"""
     return payload.get("type") in LOW_TRUST_TYPES or payload.get("source") in LOW_TRUST_SOURCES
+
+
+def _should_review(payload: dict) -> bool:
+    """要不要送模型复核。比 `_is_low_trust` 宽:会话类也复核,但不封顶 —— 把
+    对话的 importance 压到 0.4 以下等于让它永不进检索,那是废掉记忆,不是降噪。"""
+    return payload.get("type") in REVIEW_TYPES or payload.get("source") in LOW_TRUST_SOURCES
+
+
+def _keep_importance(importance: float, *, low_trust: bool) -> float:
+    """低信任日志:封顶后写回(它们原始 importance 是插件硬编码的 0.3,本来就没信息)。
+    会话类:返回 None = 一个字都不改 —— 降噪的职责是**删噪音**,不是给留下来的
+    内容重新定价。模型给的 0.8/0.85 若直接写回,等于把一条普通对话顶到检索
+    阈值 0.5 之上跟真正重要的记忆抢位置,那是另一种污染。"""
+    return min(importance, LOW_TRUST_IMPORTANCE_CAP) if low_trust else None
 
 
 async def _mark_discarded(memory_id: str) -> None:
@@ -87,11 +111,24 @@ async def _update_importance(memory_id: str, importance: float) -> None:
         await session.commit()
 
 
+async def _mark_reviewed(memory_id: str) -> None:
+    """只打复核标签,不碰 importance —— 会话类保留行走这条路。"""
+    from gateway.core.database import async_session
+    from gateway.models import Memory
+
+    async with async_session() as session:
+        memory = await session.get(Memory, memory_id)
+        if memory is None:
+            return
+        memory.tags = list({*(memory.tags or []), NOISE_FILTER_TAG})
+        await session.commit()
+
+
 async def _on_memory_created(event: Event) -> None:
     if not core_settings.noise_filter_enabled:
         return
     payload = event.payload
-    if not _is_low_trust(payload):
+    if not _should_review(payload):
         return
     if core_settings.noise_filter_mode != "live":
         # batch 模式:什么都不做。这一行没有 noise-filter 标签,
@@ -111,10 +148,14 @@ async def _on_memory_created(event: Event) -> None:
 
     try:
         if decision.keep:
-            capped = min(decision.importance, LOW_TRUST_IMPORTANCE_CAP)  # 低信任日志封顶,永不浮出检索
-            await _update_importance(memory_id, capped)
+            # 日志类封顶,永不浮出检索;会话类只打标签,importance 保持原样。
+            capped = _keep_importance(decision.importance, low_trust=_is_low_trust(payload))
+            if capped is None:
+                await _mark_reviewed(memory_id)
+            else:
+                await _update_importance(memory_id, capped)
             logger.info(
-                "noise_filter: kept memory_id=%s importance=%s->%.2f (capped from %.2f, verdict=%s)",
+                "noise_filter: kept memory_id=%s importance=%s->%.2f (model=%.2f, verdict=%s)",
                 memory_id, payload.get("importance"), capped, decision.importance, decision.source,
             )
         else:
@@ -151,13 +192,13 @@ async def process_pending(limit: int | None = None) -> dict[str, int]:
     cap = limit or core_settings.noise_filter_batch_limit
     async with async_session() as session:
         rows = (await session.execute(sql_text(
-            "select id, content, coalesce(source,'') from memories "
+            "select id, content, coalesce(source,''), coalesce(type,'') from memories "
             "where (type = any(:types) or source = any(:sources)) "
             # 判过的都带这个标签 —— 它的缺席就是"待办"
             "  and cast(tags as text) not like :tag "
             "  and status = 'active' "
             "order by created_at limit :cap"
-        ), {"types": list(LOW_TRUST_TYPES), "sources": list(LOW_TRUST_SOURCES),
+        ), {"types": list(REVIEW_TYPES), "sources": list(LOW_TRUST_SOURCES),
             "tag": f"%{NOISE_FILTER_TAG}%", "cap": cap})).all()
 
     if not rows:
@@ -168,7 +209,7 @@ async def process_pending(limit: int | None = None) -> dict[str, int]:
     sem = asyncio.Semaphore(core_settings.noise_filter_concurrency)
     stats = {"pending": len(rows), "kept": 0, "discarded": 0, "failed": 0}
 
-    async def one(memory_id: str, content: str, source: str) -> None:
+    async def one(memory_id: str, content: str, source: str, mem_type: str) -> None:
         async with sem:
             try:
                 decision = await evaluate(str(content), memory_source=source)
@@ -180,7 +221,12 @@ async def process_pending(limit: int | None = None) -> dict[str, int]:
                 return
         try:
             if decision.keep:
-                await _update_importance(memory_id, min(decision.importance, LOW_TRUST_IMPORTANCE_CAP))
+                low_trust = _is_low_trust({"type": mem_type, "source": source})
+                capped = _keep_importance(decision.importance, low_trust=low_trust)
+                if capped is None:
+                    await _mark_reviewed(memory_id)
+                else:
+                    await _update_importance(memory_id, capped)
                 stats["kept"] += 1
             else:
                 await _mark_discarded(memory_id)
@@ -189,7 +235,7 @@ async def process_pending(limit: int | None = None) -> dict[str, int]:
             logger.exception("noise_filter batch: 写回失败 memory_id=%s", memory_id)
             stats["failed"] += 1
 
-    await asyncio.gather(*(one(r[0], r[1], r[2]) for r in rows))
+    await asyncio.gather(*(one(r[0], r[1], r[2], r[3]) for r in rows))
     logger.info("noise_filter batch 完成: %s", stats)
     return stats
 

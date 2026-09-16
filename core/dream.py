@@ -39,7 +39,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from core.config import CoreSettings, core_settings
-from core.dream_narrative import write_dream_diary
+from core.dream_narrative import build_narrative_prompt, write_dream_diary
 from core.emotion import get_emotion_engine
 from core.event_bus import EventBus, EventType
 from core.personality import get_personality_engine
@@ -878,14 +878,32 @@ class DreamEngine:
                 # for roughly ten hours of every local day, e.g. local
                 # 09:xx == UTC of the *previous* calendar day — using
                 # started.date() here mislabels the diary entry by a day.
+                promoted_for_diary = knowledge_summaries or promoted_records
+                # 先让本地模型(model_router 的 dream 档)写一段散文;拿不到就
+                # 走原模板。模型只负责"好看"那一段,下面的片段清单照常写 ——
+                # 日记同时是审计材料,不能被一段散文替换掉。
+                narrative_text = None
+                if self._settings.dream_narrative_model_enabled:
+                    prompt = build_narrative_prompt(
+                        promoted_for_diary,
+                        rem_clusters,
+                        emotion_summary,
+                        (personality_summary or {}).get("top_traits", []),
+                    )
+                    if prompt:
+                        from core.local_llm import generate  # 延迟导入:避免 core 启动期循环依赖
+
+                        narrative_text = await generate("dream", prompt, max_tokens=320, temperature=0.7)
+                        logger.info("dream narrative: 本地模型%s", "已生成" if narrative_text else "未生成,退回模板")
                 narrative_path = write_dream_diary(
                     date_=datetime.now().date(),
-                    promoted=knowledge_summaries or promoted_records,
+                    promoted=promoted_for_diary,
                     rem_clusters=rem_clusters,
                     emotion_summary=emotion_summary,
                     personality_summary=personality_summary,
                     stats=stats,
                     diary_dir=diary_dir,
+                    narrative_text=narrative_text,
                 )
             except Exception:
                 logger.exception("dream narrative generation failed; deep promotions still committed")

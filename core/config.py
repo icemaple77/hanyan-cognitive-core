@@ -437,6 +437,23 @@ class CoreSettings(BaseSettings):
         "Independent of HCC_OLLAMA_URL (gateway/core/embeddings.py's plain "
         "os.getenv config), same default host.",
     )
+    # 梦境日记:True 时先让本地模型(model_router 的 dream 档,现为 qwen3.5:4b)
+    # 写一段,失败/超时/素材为空一律退回原来的模板渲染 —— 模板路径永远保留,
+    # dreaming 绝不能因为模型没起来就写不出日记。
+    dream_narrative_model_enabled: bool = Field(
+        default=True,
+        description="Let core/local_llm.py write the dream diary narrative, falling back to the "
+        "template renderer on any failure (HCC_DREAM_NARRATIVE_MODEL_ENABLED).",
+    )
+
+    # core/local_llm.py 用(dreaming 写日记等)。比降噪的 15s 宽:降噪一条只吐
+    # 一行 JSON,写日记要吐一整段,实测 qwen3.5:4b 约 8s,冷启动再加 3-4s。
+    local_llm_timeout: float = Field(
+        default=60.0, gt=0,
+        description="Per-call HTTP timeout in seconds for core/local_llm.py text generation "
+        "(HCC_LOCAL_LLM_TIMEOUT).",
+    )
+
     noise_filter_timeout: float = Field(
         default=15.0, gt=0,
         description="Per-call HTTP timeout in seconds against Ollama "

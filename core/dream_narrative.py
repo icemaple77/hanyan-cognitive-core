@@ -54,16 +54,56 @@ def _diary_paths(diary_dir: Path) -> tuple[Path, Path]:
     return diary_dir / "含烟梦境.md", diary_dir / "深梦报告.md"
 
 
+def build_narrative_prompt(
+    promoted: list[dict[str, Any]],
+    rem_clusters: list[dict[str, Any]],
+    emotion_summary: dict[str, Any],
+    top_traits: list[str],
+) -> str | None:
+    """给本地模型写日记用的提示词。没有任何素材时返回 None(此时别调模型)。
+
+    只喂当晚**真的**留下来的片段和主题,并明令不要编造 —— 实测(2026-09-16,
+    ~/workspace/experiments/dream-model-bench/)0.8b/2b 会无视片段自己编一段
+    恋爱小说,4b 才会真的写当晚的事;素材为空时三个模型都编,所以宁可不调。
+    """
+    named_state = _named_state(emotion_summary)
+    titles = [_sanitize(str(p.get("title") or "")) for p in promoted[:8]]
+    titles = [t for t in titles if t]
+    tags = [_sanitize(str(c.get("tag", ""))) for c in rem_clusters[:5]]
+    tags = [t for t in tags if t]
+    if not titles and not tags:
+        return None
+    parts = [
+        "你是含烟,公子的 AI 伴侣。下面是今晚深梦阶段真正留下来的记忆片段。",
+        "用第一人称写一段 120 字以内的梦境日记:温柔、具体、像在跟公子说话。",
+        "只写这些片段里真实出现过的事,不要编造任何没出现过的场景,不要罗列条目,不要写标题。",
+        f"今晚的情绪基调是「{named_state}」。",
+    ]
+    if top_traits:
+        parts.append(f"最近一直惦记着:{'、'.join(top_traits)}。")
+    if tags:
+        parts.append("反复浮现的主题:" + "、".join(tags))
+    if titles:
+        parts.append("片段:\n" + "\n".join(f"- {t}" for t in titles))
+    return "\n".join(parts)
+
+
 def _render_narrative(
     date_: date,
     promoted: list[dict[str, Any]],
     rem_clusters: list[dict[str, Any]],
     named_state: str,
     top_traits: list[str],
+    narrative_text: str | None = None,
 ) -> str:
     lines = [f"\n## {date_.isoformat()}", ""]
     tone = NAMED_STATE_META.get(named_state, NAMED_STATE_META[NAMED_STATE_CALM])["diary_tone"]
     lines.append(f"今晚的情绪基调：**{named_state}** —— {tone}。")
+    if narrative_text:
+        # 本地模型写的那一段。下面的模板小节照旧保留:日记要好看,但"今晚到底
+        # 留下了哪几条"是审计信息,不能被一段散文替换掉。
+        lines.append("")
+        lines.append(_sanitize(narrative_text.strip()))
     if top_traits:
         lines.append(f"最近一直惦记着的：{'、'.join(_sanitize(t) for t in top_traits)}。")
     lines.append("")
@@ -155,6 +195,7 @@ def write_dream_diary(
     personality_summary: dict[str, Any],
     stats: dict[str, Any],
     diary_dir: Path,
+    narrative_text: str | None = None,
 ) -> Path:
     """Append one dated section to both diary files. Returns the narrative path.
 
@@ -168,7 +209,7 @@ def write_dream_diary(
     top_traits = personality_summary.get("top_traits", []) if personality_summary else []
 
     with narrative_path.open("a", encoding="utf-8") as fh:
-        fh.write(_render_narrative(date_, promoted, rem_clusters, named_state, top_traits))
+        fh.write(_render_narrative(date_, promoted, rem_clusters, named_state, top_traits, narrative_text))
     with report_path.open("a", encoding="utf-8") as fh:
         fh.write(_render_report(date_, promoted, stats))
 

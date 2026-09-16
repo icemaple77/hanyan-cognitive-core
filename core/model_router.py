@@ -14,54 +14,69 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Default model assignments (can all be overridden via env vars)
+# 兜底(profile 里没配这个 module 时才用到)。2026-09-16 起只写本机真实存在的
+# tag —— 旧默认值 qwen3:8b / qwen3:14b / gpt-4o 一个都拉不起来,等于让
+# core/local_llm.py 必定失败、模块静默退回模板,排查时非常费解。
 DEFAULT_MODELS: dict[str, dict[str, str]] = {
     "memory": {
         "provider": os.getenv("HCC_MODEL_MEMORY", "local"),
-        "model": os.getenv("HCC_MODEL_MEMORY_MODEL", "qwen3:8b"),
+        "model": os.getenv("HCC_MODEL_MEMORY_MODEL", "nf-filter:0.8b-r2"),
         "priority": "fast",
     },
     "emotion": {
         "provider": os.getenv("HCC_MODEL_EMOTION", "local"),
-        "model": os.getenv("HCC_MODEL_EMOTION_MODEL", "qwen3:8b"),
+        "model": os.getenv("HCC_MODEL_EMOTION_MODEL", "qwen3.5:2b"),
         "priority": "fast",
     },
     "dream": {
         "provider": os.getenv("HCC_MODEL_DREAM", "local"),
-        "model": os.getenv("HCC_MODEL_DREAM_MODEL", "qwen3:14b"),
+        "model": os.getenv("HCC_MODEL_DREAM_MODEL", "qwen3.5:4b"),
         "priority": "quality",
     },
     "planner": {
         "provider": os.getenv("HCC_MODEL_PLANNER", "local"),
-        "model": os.getenv("HCC_MODEL_PLANNER_MODEL", "gpt-4o"),
+        "model": os.getenv("HCC_MODEL_PLANNER_MODEL", "qwen3.5:4b"),
         "priority": "quality_first",
     },
     "ocr": {
         "provider": os.getenv("HCC_MODEL_OCR", "local"),
-        "model": os.getenv("HCC_MODEL_OCR_MODEL", "minicpm"),
+        "model": os.getenv("HCC_MODEL_OCR_MODEL", "qwen2.5vl:7b"),
         "priority": "specialized",
     },
     "summary": {
         "provider": os.getenv("HCC_MODEL_SUMMARY", "local"),
-        "model": os.getenv("HCC_MODEL_SUMMARY_MODEL", "qwen3:8b"),
+        "model": os.getenv("HCC_MODEL_SUMMARY_MODEL", "qwen3.5:4b"),
         "priority": "balanced",
     },
     "embedding": {
-        "provider": os.getenv("HCC_MODEL_EMBEDDING", "ollama"),
-        "model": os.getenv("HCC_MODEL_EMBEDDING_MODEL", "BAAI/bge-m3"),
+        "provider": os.getenv("HCC_MODEL_EMBEDDING", "local"),
+        "model": os.getenv("HCC_MODEL_EMBEDDING_MODEL", "BAAI/bge-base-zh-v1.5"),
         "priority": "fast",
     },
 }
 
 # Hardware profiles for automatic model selection
 HARDWARE_PROFILES: dict[str, dict[str, Any]] = {
+    # 2026-09-16 对齐现实:旧表里的 qwen3:8b / qwen3:14b / bge-m3 本机一个都没有
+    # (`ollama list` 实际是 qwen3.5:* 系列),而 16GB 的 Mac mini 要同时供网关、
+    # 嵌入、降噪,8B 常驻扛不住。现在每个条目都是本机真实存在、且实测过的 tag。
     "macmini_m4": {
-        "memory": "qwen3:8b", "emotion": "qwen3:8b", "dream": "qwen3:14b",
-        "planner": "qwen3:14b", "embedding": "bge-m3",
+        # 降噪:蒸馏出的 0.8B,常驻 0.83GB,单条 0.47s(实验见
+        # ~/workspace/experiments/nf-distill-20260915/report.html)
+        "memory": "nf-filter:0.8b-r2", "emotion": "qwen3.5:2b",
+        # 做梦写日记:实测只有 4b 真的在用当晚的记忆片段写,0.8b/2b 会编
+        # (~/workspace/experiments/dream-model-bench/)。一天只在 03:00 调一次,
+        # 2.86GB 是瞬时占用,写完即卸。
+        "dream": "qwen3.5:4b", "summary": "qwen3.5:4b",
+        "planner": "qwen3.5:4b", "embedding": "BAAI/bge-base-zh-v1.5",
         "max_parallel": 2, "dream_enabled": True,
     },
-    "rtx4090": {
-        "memory": "qwen3:32b", "emotion": "qwen3:8b", "dream": "qwen3:72b",
-        "planner": "gpt-4o", "embedding": "bge-m3",
+    # Umbrella(RTX 5080 16GB):只在它醒着时用,夜间 dreaming 不依赖它 ——
+    # 为写一篇日记去 WOL 唤醒一台台式机不划算。
+    "rtx5080": {
+        "memory": "qwen35b-a3b:latest", "emotion": "qwen3.5:4b",
+        "dream": "qwen27b:latest", "summary": "qwen35b-a3b:latest",
+        "planner": "qwen35b-a3b:latest", "embedding": "BAAI/bge-base-zh-v1.5",
         "max_parallel": 4, "dream_enabled": True,
     },
     "cloud": {

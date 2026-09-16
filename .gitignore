@@ -24,3 +24,6 @@ scripts/_kanban_dedup_*.json
 # 规则就永远匹配不上。注释必须自成一行(2026-09-05 踩到,原来那两条一直没生效)。
 scripts/_qmd_bloat_snapshot_*.json
 scripts/_dream_dedupe_snapshot_*.json
+
+# 运行日志(launchd 把 gateway 的 stdout/stderr 写在这里)
+logs/
