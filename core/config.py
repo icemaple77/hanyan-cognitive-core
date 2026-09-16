@@ -293,6 +293,17 @@ class CoreSettings(BaseSettings):
         default=14.0, gt=0, description="Half-life (days) for the recency component and the phase-boost decay."
     )
     dream_limit: int = Field(default=10, ge=1, description="Max memories promoted per Deep run.")
+    # 晋升前的降噪闸(2026-09-16):放宽 min_access_count 之后,深梦的"够格但没排上"
+    # 名单里分数最高的两条是 cron 任务的系统提示(`[IMPORTANT: You are running as a
+    # scheduled cron job...`,得分 1.05)。打分的四项(频次/标签数/新近/重要度)没有
+    # 一项在量"这东西有没有价值",系统噪音恰好在频次和标签数上得分最高 —— 门槛一松,
+    # 它们就会被晋升。晋升前让降噪模型再判一次,keep=false 的直接出局。
+    # 成本:每晚至多 dream_limit 次调用,0.8b 每条约 0.47s。
+    dream_promote_noise_check: bool = Field(
+        default=True,
+        description="Run the noise filter over Deep-phase promotion candidates and drop the ones "
+        "it judges to be noise (HCC_DREAM_PROMOTE_NOISE_CHECK).",
+    )
     dream_max_prior_loss_fraction: float = Field(
         default=0.25,
         ge=0.0,

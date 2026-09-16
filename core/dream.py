@@ -778,7 +778,39 @@ class DreamEngine:
                 and not _is_low_trust_memory(m)
             ]
             eligible.sort(key=lambda pair: pair[1]["score"], reverse=True)
-            promoted_pairs = eligible[: self._settings.dream_limit]
+            # 晋升前的降噪闸:打分函数量不出"有没有价值"(四项是频次/标签数/新近/
+            # 重要度),系统噪音恰好在频次和标签数上得分最高 —— 2026-09-16 放宽
+            # min_access_count 后,"够格但没排上"名单里分数最高的两条就是 cron 的
+            # 系统提示。让降噪模型对候选再判一次,keep=false 的出局。
+            # 只判要晋升的那一批(≤dream_limit),判过的行走 local_filter 的内容哈希
+            # 缓存,不重复烧推理;模型挂了 evaluate 会退回规则引擎,不会卡住做梦。
+            noise_rejected: list[dict[str, Any]] = []
+            if self._settings.dream_promote_noise_check:
+                from core.local_filter import evaluate as noise_evaluate
+
+                kept_pairs: list[tuple[Memory, dict[str, Any]]] = []
+                for m, sc in eligible:
+                    if len(kept_pairs) >= self._settings.dream_limit:
+                        break
+                    try:
+                        verdict = await noise_evaluate(m.content or "", memory_source=m.source or "")
+                    except Exception:
+                        logger.exception("run_deep: 降噪闸判定失败 memory_id=%s,按放行处理", m.id)
+                        kept_pairs.append((m, sc))
+                        continue
+                    if verdict.keep:
+                        kept_pairs.append((m, sc))
+                    else:
+                        noise_rejected.append({"id": m.id, "title": self._title(m), "score": sc["score"]})
+                promoted_pairs = kept_pairs
+                # 无条件记一行:拦下 0 条时也要能看出"闸门跑了、只是没东西可拦",
+                # 否则和"闸门根本没执行"在日志里长得一模一样。
+                logger.info(
+                    "run_deep: 降噪闸判了 %d 条候选,放行 %d,拦下 %d",
+                    len(kept_pairs) + len(noise_rejected), len(kept_pairs), len(noise_rejected),
+                )
+            else:
+                promoted_pairs = eligible[: self._settings.dream_limit]
 
             date_tag = f"promoted:deep:hcc:{started.date().isoformat()}"
             promoted_records: list[dict[str, Any]] = []
@@ -822,6 +854,10 @@ class DreamEngine:
                 "scanned": len(candidates),
                 "eligible": len(eligible),
                 "promoted": len(promoted_pairs),
+                # 晋升前被降噪闸拦下的候选:数量 + 是哪几条。留在 stats 里,
+                # 好判断这道闸是拦对了还是拦过头了。
+                "noise_rejected_count": len(noise_rejected),
+                "noise_rejected": noise_rejected[:10],
                 "promoted_memories": promoted_records,
                 "knowledge_ids": knowledge_ids,
                 "knowledge_skip_notes": knowledge_skip_notes,
