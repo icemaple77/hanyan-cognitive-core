@@ -421,6 +421,17 @@ async function fetchTurnContextBlock(baseUrl, { userId, agentId }, query, log) {
       body: { query, user_id: userId, agent_id: agentId, include_emotion: true },
     });
     let text = String(data?.context || "").trim();
+    // 检索反馈回路(2026-09-16):每轮真正被注入进对话的记忆,也算一次"被想起"。
+    // 在此之前只有 session_start 那次回顾会 touch,而 dreaming 的晋升门槛正是
+    // access_count —— 于是"天天被注入、真的在参与对话"的记忆在晋升上等于没发生
+    // 过(近 30 天 1.5 万条里 access_count>=1 的只有 147 条)。fire-and-forget,
+    // 失败只记日志:强化信号丢一次无所谓,绝不能拖慢或搞砸 prompt 构建。
+    const touchIds = Array.isArray(data?.memory_ids) ? data.memory_ids.filter(Boolean) : [];
+    if (touchIds.length) {
+      hccFetch(baseUrl, "/memory/touch", { method: "POST", body: { ids: touchIds } }).catch((err) => {
+        log.error?.(`[hcc-memory] turn-tail touch failed: ${err.message}`);
+      });
+    }
     // 方案A: soul 实时情绪直读——对"当前这句用户消息"调 soul 编码器拿 17 维
     // 情绪, 拼进 appendContext 尾部。失败静默(不影响记忆块), 不阻塞对话。
     if (query && Date.now() >= soulDownUntil) {

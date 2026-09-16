@@ -99,6 +99,11 @@ class ContextResponse(BaseModel):
     token_count_estimate: int = Field(
         default=0, description="Approximate token count of the prompt."
     )
+    memory_ids: list[str] = Field(
+        default_factory=list,
+        description="Ids of the memories that ended up in the context, so the caller can "
+        "POST /memory/touch them (recall reinforcement).",
+    )
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Plan + prompt assembly metadata."
     )
@@ -194,9 +199,16 @@ async def build_context(request: ContextRequest) -> ContextResponse:
         "provider_metadata": context.get("provider_metadata", {}),
     }
 
+    # 每轮注入命中的记忆 id 回给调用方,让它 POST /memory/touch ——
+    # 2026-09-16 查实:access_count 只有 session_start 那次回顾会 +1,而
+    # dreaming 的晋升门槛正是 access_count,于是"每轮被真正注入进对话的记忆"
+    # 在晋升上等于没发生过。近 30 天 1.5 万条里 access_count>=1 的只有 147 条。
+    memory_ids = [str(i.get("id") or i.get("memory_id")) for i in memory_items if i.get("id") or i.get("memory_id")]
+
     return ContextResponse(
         context=context.get("context", ""),
         sources=sources,
+        memory_ids=memory_ids,
         prompt=built["prompt"],
         query_type=plan.query_type.value,
         token_count_estimate=built["token_count_estimate"],
