@@ -18,7 +18,7 @@ Exposes HCC(记忆/情绪/人格/遗忘/知识)的核心能力为 MCP 工具,给
     python mcp/server.py --transport stdio
 
     # streamable-http(OpenClaw 等注册一个 URL 的客户端)
-    python mcp/server.py --transport streamable-http --host 0.0.0.0 --port 8001
+    python mcp/server.py --transport streamable-http --host 127.0.0.1 --port 8001
 
 同一份工具代码,两种传输方式,不用维护两套实现。
 
@@ -412,7 +412,7 @@ def main() -> None:
     parser.add_argument("--transport", choices=["stdio", "streamable-http", "sse"], default="stdio",
                        help="stdio for local subprocess clients (Claude Code); "
                             "streamable-http for network clients (OpenClaw registers a URL)")
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8001)
     args = parser.parse_args()
 
