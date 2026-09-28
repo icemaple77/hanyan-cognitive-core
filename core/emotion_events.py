@@ -48,6 +48,9 @@ async def _on_memory_created(event: Event) -> None:
     content = event.payload.get("content")
     if not content:
         return
+    # 运行时已经直接 /soul/perceive 过这句话(DSH 钩子),入库时再灌一次就是双计(2026-09-28)
+    if "soul:perceived" in (event.payload.get("tags") or []):
+        return
     importance = event.payload.get("importance")
     try:
         import time as _time
