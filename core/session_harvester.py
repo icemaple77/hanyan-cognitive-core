@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import glob
 import json
 import logging
@@ -71,6 +72,43 @@ def _parse_claude(obj: dict):
     text = _extract_text(m.get("content"))
     # 跳过纯工具/系统噪音:命令输出包裹、caveat 等交给 4b,但空文本直接跳
     return (role, text) if text else None
+
+
+def _query_agent_sqlite(db: str):
+    """openclaw 8.x per-agent 库:近 12h 的 message 事件。库打不开返回 None,没这张表返回 []。"""
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return None
+    try:
+        try:  # 8.2 未落地的库可能没这张表 → 跳过不报错
+            return conn.execute(
+                "SELECT session_id, seq, event_json FROM transcript_events "
+                "WHERE created_at > ? AND (event_json LIKE '%\"type\":\"message\"%' "
+                "OR event_json LIKE '%\"type\": \"message\"%') "
+                "ORDER BY session_id, seq LIMIT 5000",
+                (int(time.time() * 1000) - 12 * 3600 * 1000,)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+    finally:
+        conn.close()
+
+
+def _query_hermes(db: str, table: str, wm):
+    """hermes messages 表:wm 为 None 时只取当前最大 id(首见定水位),否则取 id>wm 的新消息。"""
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+    try:
+        if wm is None:
+            row = conn.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()
+            return (row[0] if row else 0), []
+        return None, conn.execute(
+            f"SELECT id, role, content FROM {table} "
+            "WHERE id > ? AND role IN ('user','assistant') "
+            "AND content IS NOT NULL AND content != '' ORDER BY id ASC LIMIT 500",
+            (wm,),
+        ).fetchall()
+    finally:
+        conn.close()
 
 
 # 每个 runtime 一个适配器。kind=file(默认,tail JSONL)或 sqlite(查库,按自增 id 增量)。
@@ -196,23 +234,11 @@ class SessionHarvester:
             return 0  # 7.x 时代:file 适配器负责,避免同一对话双份入库
         stored = 0
         for db in sorted(glob.glob(ad["glob"])):
-            try:
-                conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
-            except sqlite3.Error:
+            # 在线程里查:main 库 428MB,这条 LIKE 是全表扫,冷缓存下要 5s。以前直接在事件循环里跑,
+            # 每 60s 把整个 gateway 堵住一次,/health 超时 → HUD 上 memory 红一下(2026-09-28 抓栈确认)。
+            rows = await asyncio.to_thread(_query_agent_sqlite, db)
+            if rows is None:
                 continue
-            try:
-                cur = conn.cursor()
-                try:  # 8.2 未落地的库可能没这张表 → 跳过不报错
-                    rows = cur.execute(
-                        "SELECT session_id, seq, event_json FROM transcript_events "
-                        "WHERE created_at > ? AND (event_json LIKE '%\"type\":\"message\"%' "
-                        "OR event_json LIKE '%\"type\": \"message\"%') "
-                        "ORDER BY session_id, seq LIMIT 5000",
-                        (int(time.time() * 1000) - 12 * 3600 * 1000,)).fetchall()
-                except sqlite3.OperationalError:
-                    return 0
-            finally:
-                conn.close()
             cur_session = None
             for session_id, seq, event_json in rows:
                 key = f"agentdb:{db}:{session_id}"
@@ -249,26 +275,15 @@ class SessionHarvester:
             return 0
         key = f"sqlite:{db}:{table}"
         stored = 0
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
-        try:
-            cur = conn.cursor()
-            wm = self._state.get(key)
-            if wm is None:  # 首见:水位=当前最大 id,不倒灌历史
-                row = cur.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()
-                self._state[key] = row[0] if row else 0
-                return 0
-            rows = cur.execute(
-                f"SELECT id, role, content FROM {table} "
-                "WHERE id > ? AND role IN ('user','assistant') "
-                "AND content IS NOT NULL AND content != '' ORDER BY id ASC LIMIT 500",
-                (wm,),
-            ).fetchall()
-            for mid, role, text in rows:
-                text = (text or "").strip()
-                if text:
-                    await self._store(client, f"{role}: {text}", ad["agent_id"], ad["name"])
-                    stored += 1
-                self._state[key] = mid
-        finally:
-            conn.close()
+        wm = self._state.get(key)
+        maxid, rows = await asyncio.to_thread(_query_hermes, db, table, wm)  # 同上:别在事件循环里查库
+        if wm is None:  # 首见:水位=当前最大 id,不倒灌历史
+            self._state[key] = maxid
+            return 0
+        for mid, role, text in rows:
+            text = (text or "").strip()
+            if text:
+                await self._store(client, f"{role}: {text}", ad["agent_id"], ad["name"])
+                stored += 1
+            self._state[key] = mid
         return stored
