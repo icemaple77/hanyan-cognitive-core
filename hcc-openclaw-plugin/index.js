@@ -402,6 +402,22 @@ function agentOf(event, ctx) {
 // 里,拉不拉新都不影响历史轮次的前缀)。
 const APPEND_CONTEXT_MAX_CHARS = 1500;
 const APPEND_CONTEXT_THROTTLE_TURNS = 3;
+// 话题是否变了:两句话的字符二元组重合度(Jaccard)低于阈值就算换了话题。
+// 节流期内沿用缓存块是为了提示词缓存稳定,但话题一变还注入三轮前的记忆只会误导。
+const TOPIC_CHANGE_JACCARD = 0.15;
+function bigrams(text) {
+  const t = String(text || "").replace(/\s+/g, "");
+  const out = new Set();
+  for (let i = 0; i < t.length - 1; i++) out.add(t.slice(i, i + 2));
+  return out;
+}
+function topicChanged(prevQuery, query) {
+  const a = bigrams(prevQuery), b = bigrams(query);
+  if (a.size < 4 || b.size < 4) return false; // 太短(“嗯”“好的”)判不出话题,不触发
+  let inter = 0;
+  for (const g of a) if (b.has(g)) inter++;
+  return inter / (a.size + b.size - inter) < TOPIC_CHANGE_JACCARD;
+}
 const turnContextCache = new Map(); // sessionId -> { text, turnsSinceRefresh, cachedAt, hits }
 
 // --- 阶段1(2026-09-28):切断查询污染回路 ---
@@ -1018,6 +1034,7 @@ export default {
       const shouldRefresh =
         !entry ||
         entry.turnsSinceRefresh >= APPEND_CONTEXT_THROTTLE_TURNS ||
+        topicChanged(entry.query, query) ||
         (await cacheStaleByInvalidationMarker(entry.cachedAt));
       if (shouldRefresh) {
         const block = await fetchTurnContextBlock(baseUrl, { userId, agentId }, query, log);
@@ -1027,7 +1044,7 @@ export default {
           hits = Array.isArray(entry?.hits) ? entry.hits : [];
           injected = Boolean(entry?.text);
         } else if (block.text) {
-          entry = { text: block.text, turnsSinceRefresh: 0, cachedAt: Date.now(), hits: block.hits };
+          entry = { text: block.text, turnsSinceRefresh: 0, cachedAt: Date.now(), hits: block.hits, query };
           cacheSet(turnContextCache, sid, entry);
           hits = block.hits;
           injected = true;
