@@ -540,6 +540,11 @@ class CoreSettings(BaseSettings):
         "2026-09-29 实测(可达子集 11 条 query 的 recall@5):纯向量 0.727 > RRF+加权 0.545 > "
         "再叠 rerank 0.273 —— 即现有后处理在把纯向量的好排序搞坏。",
     )
+    retrieval_source_distance_bonus: dict[str, float] = Field(
+        default_factory=lambda: {"daily_digest": 0.04},
+        description="vector_dominant 模式下按 source 给余弦距离减去的偏置"
+        "(HCC_RETRIEVAL_SOURCE_DISTANCE_BONUS,JSON)。默认让每日摘要略优先于原话;{} = 关闭。",
+    )
     retrieval_user_scope: str = Field(
         default="strict",
         description="user_id 过滤口径(HCC_RETRIEVAL_USER_SCOPE)。\n"

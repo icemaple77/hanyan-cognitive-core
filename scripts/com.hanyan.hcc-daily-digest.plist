@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.hanyan.hcc-daily-digest</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/michael/workspace/projects/HCC/.venv/bin/python</string>
+		<string>/Users/michael/workspace/projects/HCC/scripts/daily_digest.py</string>
+		<string>--yesterday</string>
+		<string>--write</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/michael/.local/bin:/Users/michael/.hermes/node/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+	</dict>
+	<key>WorkingDirectory</key>
+	<string>/Users/michael/workspace/projects/HCC</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>7</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/Users/michael/backups/hcc/daily-digest.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/michael/backups/hcc/daily-digest.log</string>
+	<key>RunAtLoad</key>
+	<false/>
+</dict>
+</plist>

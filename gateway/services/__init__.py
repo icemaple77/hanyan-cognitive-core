@@ -297,6 +297,23 @@ class MemoryService:
                 fused[index:end] = sorted(fused[index:end], key=_importance, reverse=True)
             index = end
 
+    @staticmethod
+    def _apply_source_distance_bonus(fused: list[dict], bonus: dict[str, float]) -> None:
+        """向量主序下让提炼过的记忆(如每日摘要)略微优先于原话。
+
+        同一件事,摘要条目和它出自的那几句原话向量很近;不加偏置时常是原话排前、
+        摘要排后,注入块里就全是重复的旧对话。这里给指定 source 的行在余弦距离上
+        减一个小量再重排——只动有向量距离的那一段,BM25 补进来的尾部不动。
+        """
+        if not bonus:
+            return
+        head = [it for it in fused if it.get("vector_distance") is not None]
+        if len(head) < 2:
+            return
+        tail = [it for it in fused if it.get("vector_distance") is None]
+        head.sort(key=lambda it: it["vector_distance"] - bonus.get(getattr(it["memory"], "source", None), 0.0))
+        fused[:] = head + tail
+
     async def semantic_search(
         self,
         embedding: list[float],
@@ -562,6 +579,7 @@ class MemoryService:
                 )
             for item in fused:
                 item["memory"] = item.pop("row")
+            self._apply_source_distance_bonus(fused, core_settings.retrieval_source_distance_bonus)
         else:
             fused = reciprocal_rank_fusion(bm25_results, vector_results)
             for item in fused:
