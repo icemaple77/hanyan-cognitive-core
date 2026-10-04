@@ -502,7 +502,7 @@ function recentHumanQuery(messages, maxTurns = QUERY_MAX_TURNS, maxChars = QUERY
   for (let i = messages.length - 1; i >= 0 && turns.length < maxTurns; i--) {
     if (messages[i]?.role !== "user") continue;
     const clean = extractHumanText(extractMessageText(messages[i]));
-    if (clean) turns.push(clean);
+    if (clean && !isMachineTurn(clean)) turns.push(clean); // 历史里的机器轮次不算"上一句人话"
   }
   const query = turns.reverse().join("\n").trim();
   return query.length > maxChars ? query.slice(-maxChars) : query;
@@ -1032,9 +1032,10 @@ export default {
       if (!sid) return;
       // 阶段1:query 只用清洗后的人类话(注入块不再自我检索)。
       const rawCurrent = currentTurnText(event);
-      if (isMachineTurn(rawCurrent)) {
+      // 当前句为空时(跨会话转发等事件)下面会退回用历史里最后一条消息——那条也得过机器轮次检查。
+      if (isMachineTurn(rawCurrent || lastUserMessageText(event?.messages))) {
         appendRetrievalTrace(
-          { ts: new Date().toISOString(), sessionId: sid, rawQueryHead: rawCurrent.slice(0, 120), cleanQuery: "", hits: [], injected: false, throttled: false, skipped: "machine-turn" },
+          { ts: new Date().toISOString(), sessionId: sid, rawQueryHead: (rawCurrent || lastUserMessageText(event?.messages)).slice(0, 120), cleanQuery: "", hits: [], injected: false, throttled: false, skipped: "machine-turn" },
           log
         );
         return;
