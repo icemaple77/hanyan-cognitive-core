@@ -779,6 +779,15 @@ const MemorySearchSchema = {
   additionalProperties: false,
 };
 
+const MemoryStoreSchema = {
+  type: "object",
+  properties: {
+    content: { type: "string", description: "The note to remember, written so it makes sense on its own later." },
+    summary: { type: "string", description: "Optional one-line summary." },
+  },
+  required: ["content"],
+};
+
 const MemoryGetSchema = {
   type: "object",
   properties: {
@@ -817,6 +826,12 @@ export default {
     // skip the filter when agent_id is null — see P1-3). Used for active reads
     // only; writes/emotion keep `agentId`.
     const searchAgentId = crossAgentSearch ? null : agentId;
+    // 每个 agent 的读写范围:hccAgents(含烟)读共享库、写 agentId 名下;
+    // 其余 agent(专家)只读写自己的私有库 expert:<id>,HCC 保证别人读不到。
+    const scopeFor = (aid) =>
+      !aid || hccAgents.has(aid)
+        ? { read: searchAgentId, write: agentId, private: false }
+        : { read: `expert:${aid}`, write: `expert:${aid}`, private: true };
     const log = api.logger || console;
 
     // 内建 SSE 事件监听（替代外挂 sse_monitor.py；随插件生命周期起停）
@@ -824,7 +839,7 @@ export default {
     // OpenClaw 2026.9.x 的插件生命周期钩子是 gateway_stop（"shutdown" 不再是合法的 typed hook，会被忽略）
     api.on?.("gateway_stop", () => { try { stopHccEventMonitor(); } catch {} });
 
-    api.registerTool({
+    api.registerTool((toolCtx) => { const scope = scopeFor(toolCtx?.agentId); return {
       name: "memory_search",
       description:
         "Search HCC (Hanyan Cognitive Core) long-term memory via hybrid BM25+vector search. " +
@@ -838,7 +853,7 @@ export default {
               query: params.query,
               limit: params.maxResults || 10,
               user_id: userId,
-              agent_id: searchAgentId,
+              agent_id: scope.read,
             },
           });
           const items = (data.items || []).map((it) => ({
@@ -855,9 +870,9 @@ export default {
           return jsonResult({ items: [], total: 0, error: String(err.message || err) });
         }
       },
-    });
+    }; }, { name: "memory_search" });
 
-    api.registerTool({
+    api.registerTool((toolCtx) => { const scope = scopeFor(toolCtx?.agentId); return {
       name: "memory_get",
       description: "Fetch a specific HCC memory by id, or the closest match by content substring.",
       parameters: MemoryGetSchema,
@@ -874,7 +889,7 @@ export default {
             for (let offset = 0; offset < 1000 && !found; offset += 100) {
               const data = await hccFetch(baseUrl, "/memory/search", {
                 method: "POST",
-                body: { query: "", user_id: userId, agent_id: searchAgentId, limit: 100, offset },
+                body: { query: "", user_id: userId, agent_id: scope.read, limit: 100, offset },
               });
               const items = data.items || [];
               found = items.find((m) => m.id === params.id) || null;
@@ -884,7 +899,7 @@ export default {
             // id not in the scoped window: try content search as a last resort
             const searchData = await hccFetch(baseUrl, "/memory/search", {
               method: "POST",
-              body: { query: params.id, user_id: userId, agent_id: searchAgentId, limit: 1 },
+              body: { query: params.id, user_id: userId, agent_id: scope.read, limit: 1 },
             });
             const byId = searchData.items?.[0];
             return jsonResult({ found: Boolean(byId && byId.id === params.id), memory: byId && byId.id === params.id ? byId : null });
@@ -892,7 +907,7 @@ export default {
           if (params.content) {
             const data = await hccFetch(baseUrl, "/memory/search", {
               method: "POST",
-              body: { query: params.content, user_id: userId, agent_id: searchAgentId, limit: 1 },
+              body: { query: params.content, user_id: userId, agent_id: scope.read, limit: 1 },
             });
             const found = data.items?.[0] || null;
             return jsonResult({ found: Boolean(found), memory: found });
@@ -903,7 +918,34 @@ export default {
           return jsonResult({ found: false, error: String(err.message || err) });
         }
       },
-    });
+    }; }, { name: "memory_get" });
+
+    // 写入工具:专家把自己的经验记进个人库(expert:<id>);含烟(hccAgents)写进共享库。
+    api.registerTool((toolCtx) => { const scope = scopeFor(toolCtx?.agentId); return {
+      name: "memory_store",
+      description:
+        "Save a durable note to HCC long-term memory (a lesson learned, a decision, a preference, a fact worth keeping). " +
+        "Specialist agents write to their own private library; only they can read it back with memory_search.",
+      parameters: MemoryStoreSchema,
+      async execute(_toolCallId, params) {
+        try {
+          const content = String(params.content || "").trim();
+          if (content.length < 4) return jsonResult({ stored: false, error: "content is required" });
+          const data = await storeToHcc(baseUrl, {
+            userId, agentId: scope.write, content,
+            summary: String(params.summary || "").slice(0, 200),
+            type: scope.private ? "experience" : "general",
+            tags: ["openclaw", scope.private ? "expert_note" : "agent_note"],
+            source: scope.private ? "openclaw_expert" : "openclaw_plugin",
+            importance: 0.6,
+          });
+          return jsonResult({ stored: true, id: data?.id ?? null });
+        } catch (err) {
+          log.error?.(`[hcc-memory] memory_store failed: ${err.message}`);
+          return jsonResult({ stored: false, error: String(err.message || err) });
+        }
+      },
+    }; }, { name: "memory_store" });
 
     // 体检报告 P0-2: session_start can't inject content itself (observation-only,
     // see comment above buildSessionContext), so it fetches + stashes; the next
@@ -1177,7 +1219,9 @@ export default {
         async getMemorySearchManager({ agentId: reqAgentId } = {}) {
           // Explicit caller-supplied agent wins; otherwise fall back to the
           // cross-agent read scope (null when crossAgentSearch is on).
-          const scopedAgentId = reqAgentId || searchAgentId;
+          // 用 scopeFor 而不是直接拿 reqAgentId:OpenClaw 以 "main" 身份来查时,含烟的记忆
+          // 其实记在 agentId("openclaw")等名下,按 agent_id=main 过滤只剩十几条。
+          const scopedAgentId = reqAgentId ? scopeFor(reqAgentId).read : searchAgentId;
           return {
             manager: {
               async search(query, opts = {}) {

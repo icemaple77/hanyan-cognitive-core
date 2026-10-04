@@ -3,13 +3,23 @@
   "name": "HCC Memory",
   "kind": "memory",
   "description": "Bridges OpenClaw memory to HCC (Hanyan Cognitive Core) REST API for hybrid search, recall, and durable storage",
-  "activation": { "onStartup": true },
+  "activation": {
+    "onStartup": true
+  },
   "contracts": {
-    "tools": ["memory_search", "memory_get"]
+    "tools": [
+      "memory_search",
+      "memory_get",
+      "memory_store"
+    ]
   },
   "toolMetadata": {
-    "memory_search": { "replaySafe": true },
-    "memory_get": { "replaySafe": true }
+    "memory_search": {
+      "replaySafe": true
+    },
+    "memory_get": {
+      "replaySafe": true
+    }
   },
   "configSchema": {
     "type": "object",
