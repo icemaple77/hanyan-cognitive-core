@@ -548,6 +548,14 @@ class CoreSettings(BaseSettings):
         "2026-09-29 实测(可达子集 11 条 query 的 recall@5):纯向量 0.727 > RRF+加权 0.545 > "
         "再叠 rerank 0.273 —— 即现有后处理在把纯向量的好排序搞坏。",
     )
+    retrieval_vector_tiebreak_band: float = Field(
+        default=0.02, ge=0.0, le=1.0,
+        description="vector_dominant 模式的平局区带宽(HCC_RETRIEVAL_VECTOR_TIEBREAK_BAND)。"
+        "主序是向量余弦序;仅当相邻候选的距离相对差 < 该值时才视为平局,"
+        "区内按 (importance, recency, source) 降序重排。即它们**不参与主排序**,只拆平局。"
+        "0 = 关闭。默认 0.02:刻意收窄,不动清晰的向量顺序(实测纯向量序 recall@5 0.727 最优)。"
+        "来自 fix/phase1-query-hygiene 分支(2026-09-29),2026-10-05 并入。",
+    )
     retrieval_source_distance_bonus: dict[str, float] = Field(
         default_factory=lambda: {"daily_digest": 0.04},
         description="vector_dominant 模式下按 source 给余弦距离减去的偏置"

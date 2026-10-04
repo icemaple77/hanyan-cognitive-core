@@ -300,19 +300,52 @@ class MemoryService:
 
     @staticmethod
     def _apply_source_distance_bonus(fused: list[dict], bonus: dict[str, float]) -> None:
-        """向量主序下让提炼过的记忆(如每日摘要)略微优先于原话。
+        """向量主序的最后整理:来源偏置 + 平局区 tie-break。
 
-        同一件事,摘要条目和它出自的那几句原话向量很近;不加偏置时常是原话排前、
-        摘要排后,注入块里就全是重复的旧对话。这里给指定 source 的行在余弦距离上
-        减一个小量再重排——只动有向量距离的那一段,BM25 补进来的尾部不动。
+        1. 来源偏置:同一件事,摘要条目和它出自的那几句原话向量很近;不加偏置时常是原话排前、
+           摘要排后。给指定 source 的行在余弦距离上减一个小量(``bonus``)再排。
+        2. 平局区 tie-break:偏置后的距离相对差 < ``retrieval_vector_tiebreak_band`` 的相邻候选
+           视为平局,区内按 (importance, recency, source 权重) 降序重排——重要的、新的在
+           "差不多一样相关"时排前;区外主序不动。向量主序下这是 importance 唯一起作用的地方。
+        只动有向量距离的那一段,BM25 补进来的尾部不动。
         """
-        if not bonus:
-            return
         head = [it for it in fused if it.get("vector_distance") is not None]
         if len(head) < 2:
             return
         tail = [it for it in fused if it.get("vector_distance") is None]
-        head.sort(key=lambda it: it["vector_distance"] - bonus.get(getattr(it["memory"], "source", None), 0.0))
+        bonus = bonus or {}
+
+        def _eff(it: dict) -> float:
+            return it["vector_distance"] - bonus.get(getattr(it["memory"], "source", None), 0.0)
+
+        head.sort(key=_eff)
+
+        band = core_settings.retrieval_vector_tiebreak_band
+        if band > 0:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            half_life = core_settings.retrieval_recency_half_life_days
+
+            def _tie_key(it: dict) -> tuple[float, float, float]:
+                memory = it["memory"]
+                imp = getattr(memory, "importance", None)
+                imp = 0.5 if imp is None else float(imp)
+                rec = 0.0
+                created = getattr(memory, "created_at", None)
+                if created:
+                    rec = 0.5 ** (max(0.0, (now - created).total_seconds() / 86400.0) / half_life)
+                src = core_settings.retrieval_source_weights.get(getattr(memory, "source", None), 1.0)
+                return (imp, rec, src)
+
+            index, total = 0, len(head)
+            while index < total:
+                top = _eff(head[index])
+                denom = abs(top) if abs(top) > 1e-12 else 1e-12
+                end = index + 1
+                while end < total and (_eff(head[end]) - top) / denom < band:
+                    end += 1
+                if end - index > 1:
+                    head[index:end] = sorted(head[index:end], key=_tie_key, reverse=True)
+                index = end
         fused[:] = head + tail
 
     async def semantic_search(
