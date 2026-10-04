@@ -28,6 +28,22 @@ from gateway.schemas.memory import MemoryCreate, MemoryUpdate, MemorySearch
 logger = logging.getLogger(__name__)
 
 
+# OpenClaw's tool_result_persist hook auto-logs every tool call's raw output as a
+# memory (importance=0.3 by default) — with thousands of these accumulated, they
+# drown out real content in search results (recursive tool-log-of-a-tool-log
+# quoting, near-zero relevance). exclude_noise (default on) drops them below this
+# threshold unless the caller explicitly asks for type="tool_result"; anything
+# manually promoted above the threshold stays searchable.
+NOISE_TYPE = "tool_result"
+NOISE_IMPORTANCE_THRESHOLD = 0.5
+
+# Cosine distance below which a just-stored memory is considered "same topic"
+# as an existing active one of the same type/user/agent scope (see
+# _flag_stale_duplicates). Calibrated loosely — this is a lightweight staleness
+# heuristic, not true contradiction detection (see that method's docstring).
+STALE_DISTANCE_THRESHOLD = 0.25
+
+
 class MemoryService:
     def __init__(self, session: AsyncSession):
         self.session = session
