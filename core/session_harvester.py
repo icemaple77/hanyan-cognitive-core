@@ -153,8 +153,11 @@ ADAPTERS = [
     # 8.x: 会话 jsonl 整体迁入 per-agent SQLite(openclaw-agent.sqlite.transcript_events)。
     # 与 file 适配器互斥:只要 sessions/*.jsonl 还活着(7.x)本适配器让位,绝不双读双灌。
     {"name": "openclaw", "agent_id": "openclaw", "kind": "agent_sqlite",
-     "glob": str(Path.home() / ".openclaw/agents/*/agent/openclaw-agent.sqlite"),
-     "jsonl_cutover": str(Path.home() / ".openclaw/agents/*/sessions/*.jsonl"),
+     # 只收 main(含烟):HCC 里的 conversation 是公子和含烟的日子。以前 glob 是 agents/*,
+     # coder/devops/security/tester/uxui/jxy 的工作对话(英文工具输出、排障过程)全被当成
+     # "公子和含烟的记忆"灌进来,污染检索与"最近的你们"。其他 agent 的记忆走 OpenClaw 自己。
+     "glob": str(Path.home() / ".openclaw/agents/main/agent/openclaw-agent.sqlite"),
+     "jsonl_cutover": str(Path.home() / ".openclaw/agents/main/sessions/*.jsonl"),
      "parse": _parse_openclaw},
     {"name": "claude", "agent_id": "claude-code", "kind": "file",
      "glob": str(Path.home() / ".claude/projects/*/*.jsonl"), "parse": _parse_claude},
