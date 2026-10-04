@@ -848,6 +848,7 @@ class DreamEngine:
             knowledge_ids: list[str] = []
             knowledge_summaries: list[dict[str, Any]] = []
             knowledge_skip_notes: list[dict[str, Any]] = []
+            knowledge_groups: list[dict[str, Any]] = []
             if promoted_pairs:
                 existing_result = await session.execute(
                     select(Memory).where(Memory.type == "knowledge").where(Memory.status == MemoryStatus.ACTIVE)
@@ -859,6 +860,15 @@ class DreamEngine:
                             existing_by_cluster[t] = km
 
                 groups = self._group_for_knowledge([m for m, _ in promoted_pairs], cluster_map)
+                if self._settings.dream_knowledge_mode == "llm":
+                    # 不当场拼模板空壳:把"哪几组值得巩固"交给早上的摘要阶段,
+                    # 由大模型写成真正的知识(见 gateway/api/dream_routes.py 的 pending-knowledge)。
+                    for group_key, members in groups.items():
+                        if len(members) < 2:
+                            continue  # 单条原话提炼不出"知识",每日摘要会覆盖到它
+                        knowledge_groups.append(
+                            {"key": group_key, "member_ids": sorted(m.id for m in members)})
+                    groups = {}
                 for group_key, members in groups.items():
                     kid, ksum = await self._upsert_knowledge(
                         session, group_key, members, existing_by_cluster, knowledge_skip_notes
@@ -878,6 +888,7 @@ class DreamEngine:
                 "noise_rejected_count": len(noise_rejected),
                 "noise_rejected": noise_rejected[:10],
                 "promoted_memories": promoted_records,
+                "knowledge_groups": knowledge_groups,
                 "knowledge_ids": knowledge_ids,
                 "knowledge_skip_notes": knowledge_skip_notes,
                 "top_unmet": self._top_unmet(scored, promoted_ids),
@@ -997,7 +1008,7 @@ class DreamEngine:
         """Last run per phase + configured thresholds, for GET /dream/status."""
         async with self._session_factory() as session:
             phases: dict[str, Any] = {}
-            for phase in ("light", "rem", "deep"):
+            for phase in ("light", "rem", "deep", "digest"):
                 result = await session.execute(
                     select(DreamRun).where(DreamRun.phase == phase).order_by(DreamRun.started_at.desc()).limit(1)
                 )

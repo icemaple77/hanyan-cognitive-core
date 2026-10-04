@@ -15,7 +15,9 @@ facts(稳定事实),每条带来源片段 id,便于追溯。
 用法:
   python3 scripts/daily_digest.py --days 3            # 试跑,输出到 ~/.hcc/digest-dryrun-*.json
   python3 scripts/daily_digest.py --selftest           # 用合成的非私密对话验证流程
-  python3 scripts/daily_digest.py --yesterday --write  # 定时任务:昨天的摘要写进 HCC(每天 07:00)
+  python3 scripts/daily_digest.py --yesterday --write --backfill-days 2 --knowledge 30
+      # 定时任务(每天 07:00),也是做梦的"摘要阶段":昨天的对话 → 事件/偏好/事实;
+      # 再补 2 个没摘要过的历史日子;再把 Deep 挑出的记忆组和存量模板空壳写成真正的知识(最多 30 组)
   python3 scripts/daily_digest.py --from-file X --write  # 把一份试跑结果写库,不再调模型
 
 写库:事件/偏好/事实三类(type=event/preference/fact,source=daily_digest,标签 digest、
@@ -43,7 +45,7 @@ AGENT_ID = "openclaw"  # 采集器只收 main(含烟)的会话,都记在这个 a
 MODEL = "llama-umbrella/qwen-35b"
 CHUNK_CHARS = 5000
 LINE_CHARS = 400
-MAX_PAGES = 60  # 100 条/页,最多翻 6000 条
+MAX_PAGES = 200  # 100 条/页,最多翻 20000 条(补历史时要往回看几十天)
 
 assert MODEL.startswith("llama-umbrella/"), "摘要只允许走本地 umbrella 模型"
 
@@ -328,6 +330,57 @@ def write_items(items: list[dict], stats: dict) -> None:
             stats["write_failed"] += 1
 
 
+KNOWLEDGE_PROMPT = """下面是公子与含烟的几条相关记忆(同一个话题),请把它们提炼成**一条**长期知识。
+只输出一个 JSON 对象,不要输出 JSON 以外的任何文字:
+{{"title":"不超过 20 字的标题","points":["要点1","要点2"]}}
+规则:
+1. points 写这组记忆共同说明的结论、事实、决定或经验,每条不超过 60 字,最多 6 条;写结论,不要复述对话过程。
+2. 只写记忆里确实出现的,不要推测。
+3. 如果这组内容只是闲聊、工具输出或零散过程,提炼不出值得长期记住的东西,就输出 {{"title":"","points":[]}}。
+4. 涉及亲密/私密的内容,只用克制、不露骨的概括,不要复述细节或原话。
+5. 用中文,称"公子"和"含烟"。
+
+相关记忆:
+{members}
+"""
+
+
+def _get(path: str) -> dict:
+    with urllib.request.urlopen(f"{HCC}{path}", timeout=30) as r:
+        return json.load(r)
+
+
+def summarize_knowledge(limit: int, stats: dict) -> None:
+    """做梦的知识巩固:把 Deep 挑出的记忆组(和存量模板空壳)交给大模型写成真正的知识。"""
+    stats.update(knowledge_groups=0, knowledge_written=0, knowledge_empty=0, knowledge_failed=0)
+    try:
+        pending = _get(f"/dream/pending-knowledge?limit={limit}")
+    except Exception:
+        stats["knowledge_failed"] = -1  # 网关没有这个接口/不可达
+        return
+    stats["knowledge_pending_total"] = pending.get("total_pending", 0)
+    for g in pending.get("groups") or []:
+        stats["knowledge_groups"] += 1
+        members = g.get("members") or []
+        body = {"key": g["key"], "existing_id": g.get("existing_id"), "member_ids": [m["id"] for m in members]}
+        if len(members) >= 2:
+            listing = "\n".join(f"- {m['text']}" for m in members)
+            d = parse_items(ask_model(KNOWLEDGE_PROMPT.format(members=listing)))
+            if d is None:
+                stats["knowledge_failed"] += 1
+                continue  # 模型没给出 JSON:这组留到下次,不动库里的东西
+            points = [str(p).strip() for p in (d.get("points") or []) if isinstance(p, (str, int, float)) and str(p).strip()]
+            if points:
+                body["title"] = str(d.get("title") or "").strip()
+                body["content"] = "\n".join(f"- {p}" for p in points)
+        # 成员不足 2 条或模型判定提炼不出 → content 留空,网关会把空壳软删
+        try:
+            r = _post("/dream/knowledge", body)
+            stats["knowledge_written" if r.get("action") in ("created", "updated") else "knowledge_empty"] += 1
+        except Exception:
+            stats["knowledge_failed"] += 1
+
+
 def _load_state() -> dict:
     try:
         return json.loads(STATE_PATH.read_text())
@@ -362,6 +415,11 @@ def main() -> int:
     ap.add_argument("--write", action="store_true", help="把结果写进 HCC(默认只出文件)")
     ap.add_argument("--yesterday", action="store_true", help="只处理昨天(定时任务用)")
     ap.add_argument("--force", action="store_true", help="已写过的日期也重跑")
+    ap.add_argument("--backfill-days", type=int, default=0,
+                    help="除了本次的日期,再补最近 N 个还没摘要过的日子(配合 --yesterday --write,慢慢把历史补齐)")
+    ap.add_argument("--knowledge", type=int, default=0,
+                    help="做梦知识巩固:最多把 N 组记忆写成知识(Deep 新挑出的优先,其次是存量模板空壳)")
+    ap.add_argument("--knowledge-only", action="store_true", help="只做知识巩固,不摘要任何日期")
     ap.add_argument("--from-file", default=None, help="不调模型,直接把一份试跑结果写库(需配合 --write)")
     a = ap.parse_args()
 
@@ -383,7 +441,8 @@ def main() -> int:
     if a.selftest:
         frags = selftest_fragments()
     else:
-        since = (dt.datetime.now().astimezone() - dt.timedelta(days=a.days)).replace(hour=0, minute=0, second=0, microsecond=0)
+        days = max(a.days, 45) if a.backfill_days else a.days  # 补历史要往回多看一些
+        since = (dt.datetime.now().astimezone() - dt.timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
         frags = fetch_fragments(since)
 
     by_day: dict[str, list[dict]] = defaultdict(list)
@@ -391,24 +450,34 @@ def main() -> int:
         by_day[f["t"].strftime("%Y-%m-%d")].append(f)
 
     state = _load_state()
+    if a.knowledge_only:
+        by_day = {}
     if a.yesterday:
+        today = dt.datetime.now().astimezone().strftime("%Y-%m-%d")
         y = (dt.datetime.now().astimezone() - dt.timedelta(days=1)).strftime("%Y-%m-%d")
-        by_day = {k: v for k, v in by_day.items() if k == y}
+        # 昨天 + 最近 N 个还没摘要过的更早的日子(从近到远)
+        older = [k for k in sorted(by_day, reverse=True) if k < y and state.get(k, {}).get("status") != "ok"]
+        keep = {y, *older[: max(0, a.backfill_days)]}
+        by_day = {k: v for k, v in by_day.items() if k in keep and k < today}
     if a.write and not a.force:
         by_day = {k: v for k, v in by_day.items() if state.get(k, {}).get("status") != "ok"}
 
     stats = {"days": len(by_day), "fragments": len(frags), "chunks": 0, "chunk_failed": 0,
              "episodes": 0, "preferences": 0, "facts": 0, "umbrella": "n/a"}
     all_items: list[dict] = []
-    if by_day:
+    started = dt.datetime.now().astimezone()
+    want_knowledge = a.knowledge > 0 and a.write and not a.selftest
+    if by_day or want_knowledge:
         with UmbrellaHold() as hold:
             stats["umbrella"] = "granted" if hold.granted else "not-granted"
             if hold.granted:
                 for date in sorted(by_day):
                     all_items += digest_day(date, chunks_for_day(by_day[date]), stats)
+                if want_knowledge:
+                    summarize_knowledge(a.knowledge, stats)
 
     # 一眼能看出"今天到底跑没跑":not-run(没拿到 umbrella)/ partial(有块丢了)/ ok / nothing-to-do
-    if not by_day:
+    if not by_day and not want_knowledge:
         stats["status"] = "nothing-to-do"
     elif stats["umbrella"] != "granted":
         stats["status"] = "not-run"
@@ -422,6 +491,13 @@ def main() -> int:
         for date in by_day:
             state[date] = {"at": dt.datetime.now().isoformat(), "status": stats["status"]}
         _save_state(state)
+
+    if a.write and not a.selftest:
+        try:  # 记成做梦的一个阶段,/dream/status 和梦境面板看得到
+            _post("/dream/runs", {"phase": "digest", "started_at": started.isoformat(),
+                                  "stats": {k: v for k, v in stats.items() if k != "failed_chunks"}})
+        except Exception:
+            pass
 
     out = Path(a.out or Path.home() / ".hcc" / f"digest-dryrun-{dt.datetime.now():%Y%m%d-%H%M}{'-selftest' if a.selftest else ''}.json")
     out.parent.mkdir(parents=True, exist_ok=True)

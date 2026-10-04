@@ -84,3 +84,36 @@ def test_near_raw_conversation_is_not_a_duplicate(monkeypatch):
     monkeypatch.setattr(dd, "_post", lambda path, body: {"items": [
         {"memory": {"type": "conversation", "source": "harvester:openclaw"}, "vector_distance": 0.01}]})
     assert dd._is_duplicate("公子不吃香菜") is False
+
+
+def test_knowledge_stage_writes_summary_and_discards_empty(monkeypatch):
+    posted = []
+    monkeypatch.setattr(dd, "_get", lambda path: {"total_pending": 3, "groups": [
+        {"key": "rem-a", "existing_id": "k1", "members": [{"id": "m1", "text": "x"}, {"id": "m2", "text": "y"}]},
+        {"key": "rem-b", "existing_id": "k2", "members": [{"id": "m3", "text": "x"}, {"id": "m4", "text": "y"}]},
+        {"key": "legacy-k3", "existing_id": "k3", "members": []},
+    ]})
+    outs = iter(['{"title":"NAS 换盘","points":["公子把 NAS 的硬盘换了","数据次日迁移"]}', '{"title":"","points":[]}'])
+    monkeypatch.setattr(dd, "ask_model", lambda prompt: next(outs))
+
+    def fake_post(path, body):
+        posted.append(body)
+        return {"action": "updated" if body.get("content") else "discarded"}
+
+    monkeypatch.setattr(dd, "_post", fake_post)
+    stats = {}
+    dd.summarize_knowledge(30, stats)
+    assert stats["knowledge_groups"] == 3 and stats["knowledge_written"] == 1 and stats["knowledge_empty"] == 2
+    assert posted[0]["title"] == "NAS 换盘" and posted[0]["content"].startswith("- 公子把 NAS")
+    assert "content" not in posted[1] and "content" not in posted[2]
+
+
+def test_knowledge_stage_leaves_group_alone_when_model_gives_no_json(monkeypatch):
+    posted = []
+    monkeypatch.setattr(dd, "_get", lambda path: {"groups": [
+        {"key": "rem-a", "existing_id": "k1", "members": [{"id": "m1", "text": "x"}, {"id": "m2", "text": "y"}]}]})
+    monkeypatch.setattr(dd, "ask_model", lambda prompt: "抱歉")
+    monkeypatch.setattr(dd, "_post", lambda path, body: posted.append(body) or {})
+    stats = {}
+    dd.summarize_knowledge(30, stats)
+    assert posted == [] and stats["knowledge_failed"] == 1

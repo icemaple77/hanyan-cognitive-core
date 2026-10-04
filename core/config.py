@@ -293,6 +293,14 @@ class CoreSettings(BaseSettings):
         default=14.0, gt=0, description="Half-life (days) for the recency component and the phase-boost decay."
     )
     dream_limit: int = Field(default=10, ge=1, description="Max memories promoted per Deep run.")
+    dream_knowledge_mode: str = Field(
+        default="llm",
+        description="Deep 阶段怎么产出知识(HCC_DREAM_KNOWLEDGE_MODE):\n"
+        '"llm"(默认)= Deep 只挑出值得巩固的记忆组,记在本次运行的 stats.knowledge_groups 里,'
+        "由每天早上的摘要阶段(scripts/daily_digest.py,umbrella 上的大模型)写成真正的知识;\n"
+        '"template" = 老行为:当场用模板拼「综合自 N 条相关记忆的巩固摘要 + 原话摘录」。'
+        "模板拼出来的不是摘要,只是把原话再抄一遍(2026-10-05 起弃用)。",
+    )
     # 晋升前的降噪闸(2026-09-16):放宽 min_access_count 之后,深梦的"够格但没排上"
     # 名单里分数最高的两条是 cron 任务的系统提示(`[IMPORTANT: You are running as a
     # scheduled cron job...`,得分 1.05)。打分的四项(频次/标签数/新近/重要度)没有
