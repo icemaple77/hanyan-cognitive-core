@@ -6,7 +6,7 @@
 facts(稳定事实),每条带来源片段 id,便于追溯。
 
 硬约束(写死,不可配置):
-- 模型只能是 llama-umbrella/*(本机 compute :9190 → umbrella),没有任何云端回退。
+- 模型只能是 llama-umbrella/*,直接向本机 compute :9190 的推理代理发请求 → umbrella,没有任何云端回退。
   对话内容(含亲密内容)不出这台 Mac 与 umbrella 之间的局域网。
 - stdout 只打印计数,绝不打印对话或摘要文本;结果写入 chmod 600 的文件。
 - 失败(umbrella 叫不醒/超时/模型输出不是 JSON)只记计数,不抛、不重试到云端。
@@ -33,7 +33,6 @@ import http.client
 import json
 import os
 import re
-import subprocess
 import sys
 import urllib.request
 from collections import defaultdict
@@ -183,49 +182,44 @@ def chunks_for_day(frags: list[dict]) -> list[list[dict]]:
 
 RETRY_WAIT_S = 60
 MAX_ATTEMPTS = 10  # 开机后 immich-ml 可能占着显存(无卸载口,只能等它自己 5 分钟 TTL),最多等约 10 分钟
-RETRYABLE = ("exited prematurely", "Connection error", "EHOSTDOWN", "502", "503")
 
 
-def _extract_text(stdout: str) -> str:
-    try:
-        obj = json.loads(stdout[stdout.index("{"):])
-    except Exception:
-        return stdout
-
-    def walk(o):
-        if isinstance(o, dict):
-            if isinstance(o.get("text"), str) and o["text"].strip():
-                return o["text"]
-            for v in o.values():
-                r = walk(v)
-                if r:
-                    return r
-        elif isinstance(o, list):
-            for v in o:
-                r = walk(v)
-                if r:
-                    return r
-
-    return walk(obj) or stdout
+LLM_URL = "http://127.0.0.1:9190/v1/chat/completions"  # compute 的推理代理 → umbrella 的 llama-swap
+LLM_KEY_FILE = Path.home() / ".hanyan" / "compute" / "llm_key"
+LLM_TIMEOUT_S = 600
 
 
 def ask_model(prompt: str) -> str | None:
-    """走 openclaw 的 llama-umbrella provider(直连 umbrella)。没有任何云端回退。
-    模型进程起不来(显存被占等)这类可恢复错误会等待后重试。"""
-    import time
+    """直接向 compute 的推理代理发请求(本机 → umbrella),没有任何云端回退。
 
+    2026-10-05 之前走 `openclaw infer` 命令行:它偶尔拿到结果后不退出,脚本干等到 15 分钟超时
+    再把结果当失败丢掉(当天 07:00 的任务因此几乎空转)。直连也去掉了对 OpenClaw 网关在线的依赖。
+    模型进程起不来(显存被占等)这类可恢复错误会等待后重试。
+    """
+    import time
+    import urllib.error
+
+    try:
+        key = LLM_KEY_FILE.read_text().strip()
+    except OSError:
+        return None
+    body = json.dumps({"model": MODEL.split("/", 1)[1], "stream": False,
+                       "messages": [{"role": "user", "content": prompt}]}).encode()
     for attempt in range(MAX_ATTEMPTS):
         try:
-            p = subprocess.run(
-                ["openclaw", "infer", "model", "run", "--model", MODEL, "--prompt", prompt, "--json"],
-                capture_output=True, text=True, timeout=900,
-            )
+            req = urllib.request.Request(LLM_URL, data=body, headers={
+                "Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+            with urllib.request.urlopen(req, timeout=LLM_TIMEOUT_S) as r:
+                data = json.load(r)
+            text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+            return text if isinstance(text, str) and text.strip() else None
+        except urllib.error.HTTPError as exc:
+            retryable = exc.code in (502, 503, 504)
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            retryable = True
         except Exception:
             return None
-        if p.returncode == 0 and "\"ok\": false" not in p.stdout[:200]:
-            return _extract_text(p.stdout)
-        err = (p.stdout or "") + (p.stderr or "")
-        if attempt < MAX_ATTEMPTS - 1 and any(k in err for k in RETRYABLE):
+        if retryable and attempt < MAX_ATTEMPTS - 1:
             time.sleep(RETRY_WAIT_S)
             continue
         return None
