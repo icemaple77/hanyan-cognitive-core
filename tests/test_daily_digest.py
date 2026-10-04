@@ -75,7 +75,7 @@ def test_write_items_skips_duplicates_and_tags_rows(monkeypatch):
         {"date": "2026-10-03", "type": "episode", "text": "周六去了海边散步", "sources": []},
         {"date": "2026-10-03", "type": "fact", "text": "短", "sources": []},
     ], stats)
-    assert stats == {"written": 1, "skipped_dup": 1, "write_failed": 0}
+    assert stats["written"] == 1 and stats["skipped_dup"] == 1 and stats["write_failed"] == 0
     assert stored[0]["type"] == "event" and stored[0]["source"] == "daily_digest"
     assert "digest:2026-10-03" in stored[0]["tags"] and "soul:perceived" in stored[0]["tags"]
 
@@ -117,3 +117,11 @@ def test_knowledge_stage_leaves_group_alone_when_model_gives_no_json(monkeypatch
     stats = {}
     dd.summarize_knowledge(30, stats)
     assert posted == [] and stats["knowledge_failed"] == 1
+
+
+def test_clean_item_rules():
+    assert dd.clean_item("preference", "不喜欢AI后台重复调用工具凑数据。(23,25)") == ("preference", "不喜欢AI后台重复调用工具凑数据。")
+    assert dd.clean_item("preference", "含烟验图遵循先验手、再验结构的固定流程。")[0] is None
+    assert dd.clean_item("fact", "HanyanOS 核心与全部在册器官当前运行健康。")[0] == "episode"
+    assert dd.clean_item("fact", "宁姚的设备为Air,内存24GB。")[0] == "fact"
+    assert dd.clean_item("episode", "公子与含烟聊了周六去海边(1)")[1] == "公子与含烟聊了周六去海边"

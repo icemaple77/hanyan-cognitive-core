@@ -54,13 +54,17 @@ PROMPT = """你在整理公子(用户)与含烟(AI 伴侣)的对话记录。输�
 {{"episodes":[{{"text":"...","src":[编号]}}],"preferences":[{{"text":"...","src":[编号]}}],"facts":[{{"text":"...","src":[编号]}}]}}
 规则:
 1. episodes = 这段时间实际发生的事、聊过的主题、公子的情绪状态,每条不超过 50 字,最多 6 条。
-2. preferences = 公子明确表达的喜好、习惯、不喜欢的东西,最多 5 条。
-3. facts = 稳定的事实(人物、设备、计划、约定),最多 5 条。
+2. preferences = **公子本人**长期的喜好、习惯、不喜欢的东西,最多 5 条。以下都不算,不要写进来:
+   含烟自己的做事习惯或流程;只针对这一次任务的要求(某张图的尺寸、某份文件的格式);当时做的一个决定;待办事项。
+   每条以"公子"开头。
+3. facts = **过几个月仍然成立**的事实(人物、设备、账号归属、约定、长期计划),最多 5 条。
+   "当前运行正常""今天出了某故障""昨夜梦见什么"这类一时的状态和一次性的事,写进 episodes,不要写进 facts。
 4. 只写对话里确实出现的,不要推测;没有就给空数组。
 5. 涉及亲密/私密的内容,只用克制、不露骨的概括(如"今晚很亲近、聊得温柔"),不要复述细节或原话。
 6. 机器输出、工具日志、英文工作过程不要写。
 7. 用中文,称"公子"和"含烟"。
-8. src 填支撑这条的片段编号。
+8. src 填支撑这条的片段编号;编号只写在 src 里,不要写进 text。
+9. 拿不准一句话是什么意思时不要写。口语里的"我说你记""你别动"多半是在交代做法,不是命令停止。
 
 对话记录({date}):
 {transcript}
@@ -305,13 +309,33 @@ def _is_duplicate(text: str) -> bool:
     return False
 
 
+_SRC_TAIL_RE = re.compile(r"\s*[\((\[]\s*\d+(?:\s*[,,、]\s*\d+)*\s*[\))\]]\s*$")
+_TRANSIENT_RE = re.compile(r"当前|目前|今天|今日|今晚|今早|昨夜|昨晚|昨日|昨天|刚刚|正在")
+
+
+def clean_item(kind: str, text: str) -> tuple[str | None, str]:
+    """入库前的规整,模型没守住规矩时兜底。返回 (类别或 None=丢弃, 文本)。
+    - 去掉尾巴上漏出来的来源编号 "(23,25)"
+    - 偏好必须是公子的:主语是含烟的(她自己的做事习惯)丢掉
+    - 事实里带"当前/今天/昨夜"这类时间词的是一时的状态,降成事件
+    """
+    text = _SRC_TAIL_RE.sub("", text).strip()
+    if kind == "preference" and text.startswith("含烟"):
+        return None, text
+    if kind == "fact" and _TRANSIENT_RE.search(text):
+        return "episode", text
+    return kind, text
+
+
 def write_items(items: list[dict], stats: dict) -> None:
     """把摘要条目写进 HCC。带 digest 标签,回滚 = 把带该标签的行软删。"""
     for k in ("written", "skipped_dup", "write_failed"):
         stats.setdefault(k, 0)
     for it in items:
-        text = (it.get("text") or "").strip()
-        kind = it.get("type")
+        kind, text = clean_item(it.get("type"), (it.get("text") or "").strip())
+        if kind is None:
+            stats["dropped"] = stats.get("dropped", 0) + 1
+            continue
         if len(text) < 6 or kind not in KIND_TO_TYPE:
             continue
         if _is_duplicate(text):
