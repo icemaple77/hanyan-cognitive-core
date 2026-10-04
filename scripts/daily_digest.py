@@ -235,13 +235,21 @@ def parse_items(raw: str | None) -> dict | None:
 
 def digest_day(date: str, chunks: list[list[dict]], stats: dict) -> list[dict]:
     items: list[dict] = []
-    for ch in chunks:
+    for idx, ch in enumerate(chunks):
         transcript = "\n".join(f"[{i}] {c['line']}" for i, c in enumerate(ch))
-        raw = ask_model(PROMPT.format(date=date, transcript=transcript))
+        prompt = PROMPT.format(date=date, transcript=transcript)
+        raw = ask_model(prompt)
         d = parse_items(raw)
         stats["chunks"] += 1
         if d is None:
+            # 输出不是 JSON(或模型没回话):补跑一次,再不行才算这一块丢了
+            stats["chunk_retried"] = stats.get("chunk_retried", 0) + 1
+            raw = ask_model(prompt)
+            d = parse_items(raw)
+        if d is None:
             stats["chunk_failed"] += 1
+            # 只记"哪天第几块",不记内容——让缺了什么看得见
+            stats.setdefault("failed_chunks", []).append({"date": date, "chunk": idx})
             # 仅自测(合成数据)才落原始输出用于排错;真实数据绝不落
             if os.environ.get("DIGEST_SELFTEST_RAW"):
                 Path(os.environ["DIGEST_SELFTEST_RAW"]).write_text(str(raw))
@@ -309,13 +317,23 @@ def main() -> int:
                 for date in sorted(by_day):
                     all_items += digest_day(date, chunks_for_day(by_day[date]), stats)
 
+    # 一眼能看出"今天到底跑没跑":not-run(没拿到 umbrella)/ partial(有块丢了)/ ok / nothing-to-do
+    if not by_day:
+        stats["status"] = "nothing-to-do"
+    elif stats["umbrella"] != "granted":
+        stats["status"] = "not-run"
+    elif stats["chunk_failed"]:
+        stats["status"] = "partial"
+    else:
+        stats["status"] = "ok"
+
     out = Path(a.out or Path.home() / ".hcc" / f"digest-dryrun-{dt.datetime.now():%Y%m%d-%H%M}{'-selftest' if a.selftest else ''}.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"generated": dt.datetime.now().isoformat(), "model": MODEL, "stats": stats, "items": all_items},
                               ensure_ascii=False, indent=2))
     os.chmod(out, 0o600)
     print(json.dumps({"out": str(out), **stats}, ensure_ascii=False))  # 只打印计数
-    return 0
+    return 1 if stats["status"] == "not-run" else 0  # 没跑成用退出码说出来,定时任务才看得见
 
 
 if __name__ == "__main__":

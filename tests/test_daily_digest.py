@@ -41,3 +41,17 @@ def test_malformed_pieces_skipped_not_crash(monkeypatch):
 def test_non_json_counts_as_failed_chunk(monkeypatch):
     items, st = _run(monkeypatch, "抱歉我无法处理")
     assert items == [] and st["chunk_failed"] == 1
+
+
+def test_non_json_chunk_is_retried_once(monkeypatch):
+    outs = iter(["抱歉我无法处理", '{"episodes":["补跑成功"],"preferences":[],"facts":[]}'])
+    monkeypatch.setattr(dd, "ask_model", lambda prompt: next(outs))
+    stats = {"chunks": 0, "chunk_failed": 0, "episodes": 0, "preferences": 0, "facts": 0}
+    items = dd.digest_day("2026-10-04", CH, stats)
+    assert [i["text"] for i in items] == ["补跑成功"]
+    assert stats["chunk_failed"] == 0 and stats["chunk_retried"] == 1
+
+
+def test_failed_chunk_is_recorded_without_content(monkeypatch):
+    _, st = _run(monkeypatch, None)
+    assert st["chunk_failed"] == 1 and st["failed_chunks"] == [{"date": "2026-10-04", "chunk": 0}]
