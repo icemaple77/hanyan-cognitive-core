@@ -1,5 +1,6 @@
 """Memory CRUD routes."""
 
+import asyncio
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -7,7 +8,9 @@ from pydantic import BaseModel
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import core_settings
 from core.memory_graph import build_memory_graph
+from gateway.core.embeddings import embed_text
 from gateway.core.database import get_session
 from gateway.core.events import publish_memory_event
 from gateway.models import Memory
@@ -128,9 +131,26 @@ async def semantic_search_memories(
     query: SemanticSearchRequest,
     session: AsyncSession = Depends(get_session),
 ) -> MemoryListResponse:
+    # 向量维度在边界上校验:老客户端(HanyanOS memory/embed.py)曾发来本机算的
+    # 1024 维向量,列是 768 维,PG 直接报错 → 500。给了 query 文本就由服务端自己算。
+    embedding = query.embedding
+    dim = core_settings.embedding_dim
+    if embedding is None or len(embedding) != dim:
+        if query.query and query.query.strip():
+            try:
+                embedding = await asyncio.to_thread(embed_text, query.query, is_query=True)
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f"embedding backend unavailable: {exc}")
+        elif embedding is None:
+            raise HTTPException(status_code=422, detail="provide `query` (text) or `embedding`")
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail=f"embedding has {len(embedding)} dims, server uses {dim}; send `query` text instead",
+            )
     service = MemoryService(session)
     results = await service.semantic_search(
-        embedding=query.embedding,
+        embedding=embedding,
         limit=query.limit,
         user_id=query.user_id,
         agent_id=query.agent_id,

@@ -184,8 +184,26 @@ class MemoryService:
             return None
 
         update_data = data.model_dump(exclude_unset=True, exclude={"id"})
+        # 向量由服务端负责:客户端传来的维度不对就丢弃(老客户端发 1024 维,列是 768);
+        # 正文/摘要变了而没带可用向量 → 这里重算,否则旧向量会和新内容对不上。
+        client_vec = update_data.get("embedding")
+        if client_vec is not None and len(client_vec) != core_settings.embedding_dim:
+            logger.warning("update %s: client embedding has %d dims (server %d) — ignoring it",
+                           data.id, len(client_vec), core_settings.embedding_dim)
+            update_data.pop("embedding")
+        text_changed = any(
+            key in update_data and update_data[key] != getattr(memory, key)
+            for key in ("content", "summary")
+        )
         for key, value in update_data.items():
             setattr(memory, key, value)
+        if text_changed and "embedding" not in update_data:
+            try:
+                memory.embedding = await asyncio.to_thread(
+                    embed_text, memory_embedding_text(memory.content, memory.summary))
+                memory.embedding_model = EMBEDDING_MODEL
+            except Exception:
+                logger.exception("update %s: embed_text failed — keeping the old embedding", data.id)
         memory.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)  # 列是naive datetime,
         # 之前这里直接赋值带时区的datetime,和Memory模型别处一致的写法不符,asyncpg会直接报错——
         # 说明 /memory/update 这条路径半年来大概率从没被真正调用过
@@ -496,6 +514,10 @@ class MemoryService:
         bm25_results: list[tuple[Memory, float]] = []
         vector_results: list[tuple[Memory, float]] = []
 
+        if embedding and len(embedding) != core_settings.embedding_dim:
+            logger.warning("hybrid_search: client embedding has %d dims (server %d) — ignoring it",
+                           len(embedding), core_settings.embedding_dim)
+            embedding = None
         if query and not embedding:
             try:
                 embedding = await asyncio.to_thread(embed_text, query, is_query=True)

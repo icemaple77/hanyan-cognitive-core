@@ -65,7 +65,13 @@ class MemoryListResponse(BaseModel):
 
 
 class SemanticSearchRequest(BaseModel):
-    embedding: list[float] = Field(..., description="Vector embedding to search by")
+    embedding: list[float] | None = Field(
+        default=None, description="Precomputed query vector (must match the server's embedding_dim)")
+    query: str | None = Field(
+        default=None,
+        description="Query text; the server embeds it. Preferred — a client-side vector from a "
+        "different model/dimension cannot be compared with the stored ones.",
+    )
     limit: int = Field(default=10, ge=1, le=100)
     user_id: str | None = None
     agent_id: str | None = None
