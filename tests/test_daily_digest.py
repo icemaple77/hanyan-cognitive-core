@@ -55,3 +55,32 @@ def test_non_json_chunk_is_retried_once(monkeypatch):
 def test_failed_chunk_is_recorded_without_content(monkeypatch):
     _, st = _run(monkeypatch, None)
     assert st["chunk_failed"] == 1 and st["failed_chunks"] == [{"date": "2026-10-04", "chunk": 0}]
+
+
+def test_write_items_skips_duplicates_and_tags_rows(monkeypatch):
+    stored = []
+
+    def fake_post(path, body):
+        if path == "/memory/hybrid-search":
+            dup = body["query"] == "公子不吃香菜"
+            return {"items": [{"memory": {"type": "preference", "source": "daily_digest"},
+                               "vector_distance": 0.02 if dup else 0.5}]}
+        stored.append(body)
+        return {"id": "x"}
+
+    monkeypatch.setattr(dd, "_post", fake_post)
+    stats = {}
+    dd.write_items([
+        {"date": "2026-10-03", "type": "preference", "text": "公子不吃香菜", "sources": []},
+        {"date": "2026-10-03", "type": "episode", "text": "周六去了海边散步", "sources": []},
+        {"date": "2026-10-03", "type": "fact", "text": "短", "sources": []},
+    ], stats)
+    assert stats == {"written": 1, "skipped_dup": 1, "write_failed": 0}
+    assert stored[0]["type"] == "event" and stored[0]["source"] == "daily_digest"
+    assert "digest:2026-10-03" in stored[0]["tags"] and "soul:perceived" in stored[0]["tags"]
+
+
+def test_near_raw_conversation_is_not_a_duplicate(monkeypatch):
+    monkeypatch.setattr(dd, "_post", lambda path, body: {"items": [
+        {"memory": {"type": "conversation", "source": "harvester:openclaw"}, "vector_distance": 0.01}]})
+    assert dd._is_duplicate("公子不吃香菜") is False

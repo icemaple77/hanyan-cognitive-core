@@ -15,6 +15,12 @@ facts(稳定事实),每条带来源片段 id,便于追溯。
 用法:
   python3 scripts/daily_digest.py --days 3            # 试跑,输出到 ~/.hcc/digest-dryrun-*.json
   python3 scripts/daily_digest.py --selftest           # 用合成的非私密对话验证流程
+  python3 scripts/daily_digest.py --yesterday --write  # 定时任务:昨天的摘要写进 HCC(每天 07:00)
+  python3 scripts/daily_digest.py --from-file X --write  # 把一份试跑结果写库,不再调模型
+
+写库:事件/偏好/事实三类(type=event/preference/fact,source=daily_digest,标签 digest、
+digest:<日期>)。和库里已有的事实/偏好/事件近乎相同的不重复写。已写过的日期记在
+~/.hcc/digest-state.json,重跑会跳过(--force 除外)。
 """
 
 from __future__ import annotations
@@ -277,6 +283,64 @@ def digest_day(date: str, chunks: list[list[dict]], stats: dict) -> list[dict]:
     return items
 
 
+KIND_TO_TYPE = {"episode": "event", "preference": "preference", "fact": "fact"}
+KIND_IMPORTANCE = {"episode": 0.5, "preference": 0.7, "fact": 0.65}
+DIGEST_TYPES = set(KIND_TO_TYPE.values())
+DUP_DISTANCE = 0.08  # 余弦距离;已有的事实/偏好/事件里有这么近的就不重复写
+STATE_PATH = Path.home() / ".hcc" / "digest-state.json"
+
+
+def _is_duplicate(text: str) -> bool:
+    """库里已有近乎相同的摘要条目(只和事实/偏好/事件比,不和原话比)。查不了就当不重复。"""
+    try:
+        data = _post("/memory/hybrid-search", {"query": text, "user_id": USER_ID, "limit": 5})
+    except Exception:
+        return False
+    for it in data.get("items") or []:
+        m, d = it.get("memory") or {}, it.get("vector_distance")
+        if d is not None and d <= DUP_DISTANCE and (m.get("type") in DIGEST_TYPES or m.get("source") == "daily_digest"):
+            return True
+    return False
+
+
+def write_items(items: list[dict], stats: dict) -> None:
+    """把摘要条目写进 HCC。带 digest 标签,回滚 = 把带该标签的行软删。"""
+    stats.update(written=0, skipped_dup=0, write_failed=0)
+    for it in items:
+        text = (it.get("text") or "").strip()
+        kind = it.get("type")
+        if len(text) < 6 or kind not in KIND_TO_TYPE:
+            continue
+        if _is_duplicate(text):
+            stats["skipped_dup"] += 1
+            continue
+        try:
+            _post("/memory/store", {
+                "content": f"[{it['date']}] {text}", "summary": text,
+                "user_id": USER_ID, "agent_id": AGENT_ID,
+                "type": KIND_TO_TYPE[kind], "source": "daily_digest",
+                "importance": KIND_IMPORTANCE[kind],
+                # soul:perceived:这些话含烟当时已经感知过,别再让情绪引擎算一遍
+                "tags": ["digest", f"digest:{it['date']}", "soul:perceived"],
+            })
+            stats["written"] += 1
+        except Exception:
+            stats["write_failed"] += 1
+
+
+def _load_state() -> dict:
+    try:
+        return json.loads(STATE_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _save_state(state: dict) -> None:
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+    os.chmod(STATE_PATH, 0o600)
+
+
 def selftest_fragments() -> list[dict]:
     base = dt.datetime.now().astimezone().replace(hour=9, minute=0, second=0, microsecond=0)
     lines = [
@@ -295,7 +359,26 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=3)
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--write", action="store_true", help="把结果写进 HCC(默认只出文件)")
+    ap.add_argument("--yesterday", action="store_true", help="只处理昨天(定时任务用)")
+    ap.add_argument("--force", action="store_true", help="已写过的日期也重跑")
+    ap.add_argument("--from-file", default=None, help="不调模型,直接把一份试跑结果写库(需配合 --write)")
     a = ap.parse_args()
+
+    if a.from_file:
+        d = json.loads(Path(a.from_file).read_text())
+        stats = {"status": "ok", "from_file": True}
+        state = _load_state()
+        today = dt.datetime.now().astimezone().strftime("%Y-%m-%d")  # 今天还没过完,留给明早的定时任务
+        items = [it for it in d.get("items") or []
+                 if it.get("date", today) < today and (a.force or it.get("date") not in state)]
+        if a.write:
+            write_items(items, stats)
+            for date in sorted({it["date"] for it in items}):
+                state[date] = {"at": dt.datetime.now().isoformat(), "status": "ok", "source": "from-file"}
+            _save_state(state)
+        print(json.dumps(stats, ensure_ascii=False))
+        return 0
 
     if a.selftest:
         frags = selftest_fragments()
@@ -306,6 +389,13 @@ def main() -> int:
     by_day: dict[str, list[dict]] = defaultdict(list)
     for f in frags:
         by_day[f["t"].strftime("%Y-%m-%d")].append(f)
+
+    state = _load_state()
+    if a.yesterday:
+        y = (dt.datetime.now().astimezone() - dt.timedelta(days=1)).strftime("%Y-%m-%d")
+        by_day = {k: v for k, v in by_day.items() if k == y}
+    if a.write and not a.force:
+        by_day = {k: v for k, v in by_day.items() if state.get(k, {}).get("status") != "ok"}
 
     stats = {"days": len(by_day), "fragments": len(frags), "chunks": 0, "chunk_failed": 0,
              "episodes": 0, "preferences": 0, "facts": 0, "umbrella": "n/a"}
@@ -326,6 +416,12 @@ def main() -> int:
         stats["status"] = "partial"
     else:
         stats["status"] = "ok"
+
+    if a.write and not a.selftest and stats["status"] in ("ok", "partial"):
+        write_items(all_items, stats)
+        for date in by_day:
+            state[date] = {"at": dt.datetime.now().isoformat(), "status": stats["status"]}
+        _save_state(state)
 
     out = Path(a.out or Path.home() / ".hcc" / f"digest-dryrun-{dt.datetime.now():%Y%m%d-%H%M}{'-selftest' if a.selftest else ''}.json")
     out.parent.mkdir(parents=True, exist_ok=True)
