@@ -569,11 +569,61 @@ const SOUL_RETRY_AFTER_MS = 5 * 60 * 1000;
 let soulDownUntil = 0;
 let soulDown = false;
 
+const TURN_CONTEXT_TIMEOUT_MS = 4000; // 每轮注入在用户等回复的路径上:失败最多白等这么久(默认 8s 太长)
+const RECENT_BLOCK_LIMIT = 6;
+const RECENT_BLOCK_POOL = 100; // 接口上限 100;只取 conversation,避开 session_end/compaction 之类系统记录
+const RECENT_BLOCK_MAX_CHARS = 700;
+const RECENT_BLOCK_LINE_CHARS = 110;
+const RECENT_BLOCK_SKIP_MS = 30 * 60 * 1000; // 最近 30 分钟的已在当前对话里,不重复注入
+
+// created_at 无时区后缀,HCC 存的是 UTC
+function parseHccTime(v) {
+  if (!v) return NaN;
+  const t = String(v);
+  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(t) ? t : t + "Z");
+}
+
+// 近况垫底:/context 按"这句话"检索,情绪话("累""抱抱")没有主题词,只会命中旧的相似对话,
+// 捞不到"这几天在忙什么"。不依赖 query,另取这次聊天之前最近的几条,让她开口就接得上日子。
+// 只留中文行(agent_id=openclaw 下混有子 agent 的英文工作输出)。失败静默。
+async function fetchRecentBlock(baseUrl, { userId, agentId }, log) {
+  try {
+    const data = await hccFetch(baseUrl, "/memory/search", {
+      method: "POST",
+      body: { query: "", user_id: userId, agent_id: agentId, type: "conversation", limit: RECENT_BLOCK_POOL },
+      timeoutMs: 2500,
+    });
+    const cutoff = Date.now() - RECENT_BLOCK_SKIP_MS;
+    const lines = [];
+    let used = 0;
+    for (const m of data?.items || []) {
+      const ts = parseHccTime(m.created_at);
+      if (Number.isFinite(ts) && ts > cutoff) continue;
+      const head = String(m.summary || m.content || "").split("\n")[0].replace(/\s+/g, " ").trim().slice(0, RECENT_BLOCK_LINE_CHARS);
+      if (!head || !/[\u4e00-\u9fff]/.test(head)) continue;
+      const when = Number.isFinite(ts)
+        ? new Date(ts).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })
+        : "";
+      const line = `- ${when ? `[${when}] ` : ""}${head}`;
+      if (used + line.length > RECENT_BLOCK_MAX_CHARS) break;
+      lines.push(line);
+      used += line.length;
+      if (lines.length >= RECENT_BLOCK_LIMIT) break;
+    }
+    return lines.length ? "[最近的你们 / recent before this chat]\n" + lines.join("\n") : "";
+  } catch (err) {
+    log.error?.(`[hcc-memory] recent block fetch failed: ${err.message}`);
+    return "";
+  }
+}
+
 async function fetchTurnContextBlock(baseUrl, { userId, agentId }, query, log) {
+  const t0 = Date.now();
   try {
     const data = await hccFetch(baseUrl, "/context", {
       method: "POST",
       body: { query, user_id: userId, agent_id: agentId, include_emotion: true },
+      timeoutMs: TURN_CONTEXT_TIMEOUT_MS,
     });
     let text = String(data?.context || "").trim();
     // 检索反馈回路(2026-09-16):每轮真正被注入进对话的记忆,也算一次"被想起"。
@@ -636,10 +686,12 @@ async function fetchTurnContextBlock(baseUrl, { userId, agentId }, query, log) {
       }
     }
     // 先按原语义限长内容,再包标记(标记是固定开销,不计入内容配额)。
-    const body = text.length > APPEND_CONTEXT_MAX_CHARS ? text.slice(0, APPEND_CONTEXT_MAX_CHARS) : text;
+    let body = text.length > APPEND_CONTEXT_MAX_CHARS ? text.slice(0, APPEND_CONTEXT_MAX_CHARS) : text;
+    const recent = await fetchRecentBlock(baseUrl, { userId, agentId }, log);
+    if (recent) body += (body ? "\n\n" : "") + recent;
     return { text: wrapInjectBlock(body), hits: hitsFromContextResponse(data) };
   } catch (err) {
-    log.error?.(`[hcc-memory] before_prompt_build turn context fetch failed: ${err.message}`);
+    log.error?.(`[hcc-memory] before_prompt_build turn context fetch failed after ${Date.now() - t0}ms: ${err.message}`);
     return undefined; // undefined = 请求失败,区分于请求成功但检索为空的 ""
   }
 }
