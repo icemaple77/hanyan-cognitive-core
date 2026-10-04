@@ -203,7 +203,13 @@ async def build_context(request: ContextRequest) -> ContextResponse:
     # 2026-09-16 查实:access_count 只有 session_start 那次回顾会 +1,而
     # dreaming 的晋升门槛正是 access_count,于是"每轮被真正注入进对话的记忆"
     # 在晋升上等于没发生过。近 30 天 1.5 万条里 access_count>=1 的只有 147 条。
-    memory_ids = [str(i.get("id") or i.get("memory_id")) for i in memory_items if i.get("id") or i.get("memory_id")]
+    # 只回**真正渲染进注入块**的那几条:检索池有 30 条,注入的通常不到 10 条,
+    # 把没露面的也算"被想起"会让做梦的晋升信号失真(2026-10-05)。
+    rendered = context.get("rendered_memory_ids")
+    if rendered is not None:
+        memory_ids = [str(i) for i in rendered]
+    else:
+        memory_ids = [str(i.get("id") or i.get("memory_id")) for i in memory_items if i.get("id") or i.get("memory_id")]
 
     return ContextResponse(
         context=context.get("context", ""),

@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 from collections.abc import Awaitable, Callable
 
@@ -251,16 +252,19 @@ class ContextBuilder:
         except Exception:
             logger.warning("priority fetch failed; injection falls back to relevance-only", exc_info=True)
 
+        rendered_ids: list[str] = []
         context_text = self._render_context(
             memory_items=memory_items,
             knowledge_items=knowledge_result.items,
             emotion_state=emotion_state,
             memory_limit=limit,
             priorities=priorities,
+            rendered_ids=rendered_ids,
         )
 
         return {
             "context": context_text,
+            "rendered_memory_ids": rendered_ids,
             "sources": sources,
             "provider_metadata": provider_metadata,
             "emotion_state": emotion_state,
@@ -335,6 +339,7 @@ class ContextBuilder:
         emotion_state: dict[str, Any] | None,
         memory_limit: int = 10,
         priorities: list[dict[str, Any]] | None = None,
+        rendered_ids: list[str] | None = None,
     ) -> str:
         """Render the retrieved items into a readable context block.
 
@@ -363,7 +368,10 @@ class ContextBuilder:
             if key in seen:
                 return False
             seen.add(key)
-            headlines.append(headline)
+            age = _age_label(item.get("created_at"))
+            headlines.append(f"[{age}] {headline}" if age else headline)
+            if rendered_ids is not None and (item.get("id") or item.get("memory_id")):
+                rendered_ids.append(str(item.get("id") or item.get("memory_id")))
             return True
 
         # Q1(重要且紧急)主题锚词:保送席按这些命中拉人。
@@ -432,17 +440,26 @@ class ContextBuilder:
         if knowledge_items:
             lines = ["## Knowledge"]
             # 同一事实常被 qmd 切成多块/多篇重复记录 → 渲染层按指纹去重+限量(公子 09-03:BEES×5 病灶)
+            # 知识库的文档大多是记忆导出的(QMD),同一条常常已经在上面的记忆段里 → 跨段去重;
+            # 分类索引页的标题("General")和原话行("User: …")不是知识条目 → 丢掉;
+            # 文件名里带日期的标上多久以前。
             kseen: set[str] = set()
+            shown = 0
             for item in knowledge_items:
                 heading = (item.get("heading") or item.get("id") or "").strip()
                 if not heading:
                     continue
+                if heading.casefold() in _KNOWLEDGE_JUNK_HEADINGS or _SPEAKER_LINE_RE.match(heading):
+                    continue
                 kkey = heading.casefold().strip()[:80]
-                if kkey in kseen:
+                if kkey in kseen or kkey in seen:
                     continue
                 kseen.add(kkey)
-                lines.append(f"- {heading}".rstrip())
-                if len(kseen) >= 10:
+                m = _DATE_IN_PATH_RE.search(str(item.get("id") or item.get("path") or ""))
+                age = _age_label(m.group(1)) if m else ""
+                lines.append((f"- [{age}] {heading}" if age else f"- {heading}").rstrip())
+                shown += 1
+                if shown >= 6:
                     break
             if len(lines) > 1:
                 blocks.append("\n".join(lines))
@@ -463,6 +480,35 @@ class ContextBuilder:
             blocks.append("\n".join(lines).rstrip())
 
         return "\n\n".join(blocks)
+
+
+_DATE_IN_PATH_RE = re.compile(r"(20\d{2}-\d{2}-\d{2})")
+# 知识库索引页的标题(分类名)和原话行不是知识条目
+_KNOWLEDGE_JUNK_HEADINGS = {"general", "projects", "rules", "people", "index", "readme", "knowledge"}
+_SPEAKER_LINE_RE = re.compile(r"^(user|assistant|用户|助手)\s*[::]", re.IGNORECASE)
+
+
+def _age_label(when: Any) -> str:
+    """把时间写成"今天/昨天/N天前/N个月前/N年前"。注入块里每条都带上,
+    模型才分得清"上周的事"和"五个月前的旧状态"。解析不了就返回空串。"""
+    if not when:
+        return ""
+    try:
+        t = when if isinstance(when, datetime) else datetime.fromisoformat(str(when).replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)  # 库里存的是 UTC
+    days = (datetime.now(timezone.utc).astimezone().date() - t.astimezone().date()).days
+    if days <= 0:
+        return "今天"
+    if days == 1:
+        return "昨天"
+    if days < 31:
+        return f"{days}天前"
+    if days < 365:
+        return f"{days // 30}个月前"
+    return f"{days // 365}年前"
 
 
 def _metadata_dict(metadata: Any) -> dict[str, Any]:
