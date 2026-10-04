@@ -41,7 +41,7 @@ from core.providers.base import (
 from gateway.core.database import async_session
 from gateway.core.embeddings import EMBEDDING_MODEL, embed_text, memory_embedding_text
 from gateway.models import Memory, MemoryStatus
-from gateway.services import MemoryService
+from gateway.services import MemoryService, scope_agent
 
 logger = logging.getLogger(__name__)
 
@@ -150,9 +150,8 @@ class MemoryProvider(Provider):
             if query.user_id:
                 stmt = stmt.where(Memory.user_id == query.user_id)
                 count_stmt = count_stmt.where(Memory.user_id == query.user_id)
-            if query.agent_id:
-                stmt = stmt.where(Memory.agent_id == query.agent_id)
-                count_stmt = count_stmt.where(Memory.agent_id == query.agent_id)
+            stmt = scope_agent(stmt, query.agent_id)
+            count_stmt = scope_agent(count_stmt, query.agent_id)
             if query.type:
                 stmt = stmt.where(Memory.type == query.type)
                 count_stmt = count_stmt.where(Memory.type == query.type)

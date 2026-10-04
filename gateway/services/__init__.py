@@ -26,6 +26,17 @@ from gateway.schemas.memory import MemoryCreate, MemoryUpdate, MemorySearch
 
 logger = logging.getLogger(__name__)
 
+# 私有命名空间:agent_id 以此开头的记忆(专家 agent 的个人库)只有指名该 agent_id 才读得到;
+# 不限 agent 的检索(含烟的跨运行时检索、/context)一律看不到它们。
+PRIVATE_AGENT_PREFIX = "expert:"
+
+
+def scope_agent(stmt, agent_id):
+    """给查询加 agent 范围:指名则只看那个 agent;不指名则排除私有命名空间。"""
+    if agent_id:
+        return stmt.where(Memory.agent_id == agent_id)
+    return stmt.where(func.coalesce(Memory.agent_id, "").notlike(PRIVATE_AGENT_PREFIX + "%"))
+
 # OpenClaw's tool_result_persist hook auto-logs every tool call's raw output as a
 # memory (importance=0.3 by default) — with thousands of these accumulated, they
 # drown out real content in search results (recursive tool-log-of-a-tool-log
@@ -157,9 +168,8 @@ class MemoryService:
         if query.user_id:
             stmt = stmt.where(Memory.user_id == query.user_id)
             count_stmt = count_stmt.where(Memory.user_id == query.user_id)
-        if query.agent_id:
-            stmt = stmt.where(Memory.agent_id == query.agent_id)
-            count_stmt = count_stmt.where(Memory.agent_id == query.agent_id)
+        stmt = scope_agent(stmt, query.agent_id)
+        count_stmt = scope_agent(count_stmt, query.agent_id)
         if query.shared is not None:
             stmt = stmt.where(Memory.shared == query.shared)
             count_stmt = count_stmt.where(Memory.shared == query.shared)
@@ -349,8 +359,7 @@ class MemoryService:
         )
         if user_id:
             stmt = stmt.where(Memory.user_id == user_id)
-        if agent_id:
-            stmt = stmt.where(Memory.agent_id == agent_id)
+        stmt = scope_agent(stmt, agent_id)
         if type:
             stmt = stmt.where(Memory.type == type)
         stmt = self._apply_noise_filter(stmt, type, exclude_noise)
@@ -464,8 +473,7 @@ class MemoryService:
             )
             if user_id:
                 stmt = stmt.where(Memory.user_id == user_id)
-            if agent_id:
-                stmt = stmt.where(Memory.agent_id == agent_id)
+            stmt = scope_agent(stmt, agent_id)
             if type:
                 stmt = stmt.where(Memory.type == type)
             stmt = self._apply_noise_filter(stmt, type, exclude_noise)
@@ -613,13 +621,12 @@ class MemoryService:
 
     async def get_recent(self, limit: int = 20, offset: int = 0) -> tuple[list[Memory], int]:
         stmt = (
-            select(Memory)
-            .where(Memory.status == "active")
+            scope_agent(select(Memory).where(Memory.status == "active"), None)
             .order_by(Memory.created_at.desc())
             .offset(offset)
             .limit(limit)
         )
-        count_stmt = select(func.count(Memory.id)).where(Memory.status == "active")
+        count_stmt = scope_agent(select(func.count(Memory.id)).where(Memory.status == "active"), None)
 
         total_result = await self.session.execute(count_stmt)
         total = total_result.scalar() or 0
