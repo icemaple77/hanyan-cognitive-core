@@ -416,6 +416,17 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8001)
     args = parser.parse_args()
 
+    # HCC_MCP_TOOLS=a,b,c:只暴露这几个工具。每个工具定义都要进客户端的提示词
+    # (DSH 实测 18 个工具约占 8-9k),只用记忆读写的运行时没必要带上任务/优先级那一套。
+    only = {t.strip() for t in os.environ.get("HCC_MCP_TOOLS", "").split(",") if t.strip()}
+    if only:
+        tools = mcp._tool_manager._tools
+        unknown = only - set(tools)
+        if unknown:
+            raise SystemExit(f"HCC_MCP_TOOLS 里有不存在的工具: {sorted(unknown)}")
+        for name in [n for n in tools if n not in only]:
+            del tools[name]
+
     if args.transport == "stdio":
         mcp.run(transport="stdio")
     else:
