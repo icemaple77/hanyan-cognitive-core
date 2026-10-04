@@ -46,6 +46,7 @@ from core.personality import get_personality_engine
 from gateway.core.database import async_session
 from gateway.core.events import get_event_bus
 from gateway.models import DreamRun, DreamSignal, EmotionSnapshot, Memory, MemoryStatus
+from gateway.core.dedupe import prune_chatroom_sessions, prune_exact_duplicates
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +315,23 @@ class DreamEngine:
                 "deduped": len(pending) - len(kept),
                 "signals_added": len(kept),
             }
+            # 2026-09-29: 补一道**行级**精确去重。dream 自己的巩固产出不幂等
+            # （见 _group_for_knowledge 注释：簇 key 每晚变 → 每晚新建同文），
+            # 而 _dedupe_by_embedding 只管信号、从不删行，所以重复会一直累积。
+            # 只软删、跳过受保护记忆；失败不拖垮本阶段。
+            try:
+                # 2026-09-29: 门槛定 32 字。dream 的空壳摘要只有 36–37 字
+                # （如 "Consolidated from 23 related memories"），120 字门槛会整批漏掉。
+                # 逐字相同的短内容折叠是安全的：内容留一份，只是不再重复占检索名额。
+                prune = await prune_exact_duplicates(session, min_len=32)
+                stats["exact_pruned"] = prune["discarded"]
+                # 聊天室：同一场 session 被多 agent 各自视角重录 → 按 session 归并，
+                # 每场留最全的一份。逐字去重抓不到这种「近似重复」。
+                prune_chat = await prune_chatroom_sessions(session)
+                stats["chatroom_session_pruned"] = prune_chat["discarded"]
+            except Exception:  # noqa: BLE001 - 去重属维护动作，不该让做梦失败
+                logger.exception("run_light: prune_exact_duplicates failed")
+                stats["exact_pruned"] = -1
             session.add(DreamRun(phase="light", started_at=started, finished_at=finished, stats=stats))
             await session.commit()
             logger.info("run_light complete: %s", stats)
