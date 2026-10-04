@@ -275,7 +275,7 @@ fetch(apiUrl).then(r => r.json()).then(data => {
     tooltip.style("display", "block").html(
       "<b>" + d.type + "</b> · 重要性 " + d.importance.toFixed(2) +
       (d.emotion.dominant ? " · 情绪 " + d.emotion.dominant + " (" + d.emotion.valence + ")" : "") +
-      "<br>" + d.preview + "<br><span style='opacity:.6'>" + (d.created_at || "") + "</span>"
+      "<br>" + d.preview + "<br><span style='opacity:.6'>" + (d.created_at || "").replace("T", " ").slice(0, 16) + "</span>"
     );
   }).on("mousemove", e => {
     tooltip.style("left", (e.clientX + 14) + "px").style("top", (e.clientY + 14) + "px");

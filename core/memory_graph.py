@@ -28,6 +28,8 @@ from sqlalchemy import Integer, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from gateway.core.timeutil import to_local_iso
+
 from core.emotion import EMOTION_TRIGGERS, NEW_DIM_TRIGGERS, _is_negated
 from gateway.models import Memory
 
@@ -143,7 +145,10 @@ async def build_memory_graph(
             "importance": m.importance,
             "tags": m.tags or [],
             "access_count": m.access_count,
-            "created_at": m.created_at.isoformat() if m.created_at else None,
+            # 展示层：库里存的是 UTC-naive，这里转成「公子当前时区」并带偏移量
+            # （见 gateway/core/timeutil.py）。带 offset 的 ISO 拿到的是**绝对时刻**，
+            # 不会被消费端当成当地时间误读。
+            "created_at": to_local_iso(m.created_at),
             "has_embedding": m.embedding is not None,
             "emotion": affect,
         })
