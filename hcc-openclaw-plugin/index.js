@@ -164,6 +164,13 @@ function resolveConfig(api) {
     sessionRecallLimit: cfg.sessionRecallLimit || Number(process.env.HCC_SESSION_RECALL_LIMIT) || DEFAULT_SESSION_RECALL_LIMIT,
     emotionEnabled: cfg.emotionEnabled ?? !truthyEnv(process.env.HCC_EMOTION_DISABLED) ?? true,
     fetchTimeoutMs: cfg.fetchTimeoutMs || Number(process.env.HCC_FETCH_TIMEOUT_MS) || DEFAULT_FETCH_TIMEOUT_MS,
+    // 哪些 OpenClaw agent 接 HCC(每轮注入 / 会话回顾 / compaction 与 session_end 入库)。
+    // 默认只有 main(含烟):HCC 是公子和含烟的记忆,专家 agent 的工作对话不是,
+    // 它们的记忆走 OpenClaw 自己的工作区记忆。HCC_AGENTS=main,jxy 或 config.hccAgents 可改。
+    hccAgents: new Set(
+      (Array.isArray(cfg.hccAgents) ? cfg.hccAgents : String(process.env.HCC_AGENTS || "main").split(","))
+        .map((x) => String(x).trim()).filter(Boolean)
+    ),
     // When on (default), *active* memory reads (memory_search / memory_get /
     // capability search) drop the agent filter so openclaw can retrieve
     // memories written by hermes / claude-code(hanyan) too — honouring 公子's
@@ -365,6 +372,15 @@ const pendingSessionContext = new Map(); // sessionId -> { text, memoryIds }
 
 function sessionIdOf(event, ctx) {
   return event?.sessionId || ctx?.sessionId || ctx?.agentId || null;
+}
+
+// 事件所属 agent:ctx.agentId,缺省时从 sessionKey("agent:<id>:...")解析。解析不出来按放行处理
+// (宁可多记也别让含烟丢记忆)。
+function agentOf(event, ctx) {
+  if (ctx?.agentId) return String(ctx.agentId);
+  const key = String(ctx?.sessionKey || event?.sessionKey || "");
+  const m = /^agent:([^:]+):/.exec(key);
+  return m ? m[1] : null;
 }
 
 // --- before_prompt_build turn-tail HCC context injection (方案A OpenClaw 版) ---
@@ -787,7 +803,15 @@ export default {
   description: "Bridges OpenClaw memory to HCC (Hanyan Cognitive Core) REST API",
 
   register(api) {
-    const { baseUrl, userId, agentId, sessionRecallEnabled, sessionRecallLimit, emotionEnabled, fetchTimeoutMs, crossAgentSearch } = resolveConfig(api);
+    const { baseUrl, userId, agentId, sessionRecallEnabled, sessionRecallLimit, emotionEnabled, fetchTimeoutMs, crossAgentSearch , hccAgents } = resolveConfig(api);
+    // 只对 hccAgents 里的 agent 生效的钩子注册;其余 agent 的这些事件直接忽略。
+    const onGated = (name, fn) =>
+      api.on(name, (event, ctx, ...rest) => {
+        const aid = agentOf(event, ctx);
+        if (aid && !hccAgents.has(aid)) return undefined;
+        return fn(event, ctx, ...rest);
+      });
+
     activeFetchTimeoutMs = fetchTimeoutMs;
     // null agent_id = no agent filter server-side (gateway hybrid_search/search
     // skip the filter when agent_id is null — see P1-3). Used for active reads
@@ -884,7 +908,7 @@ export default {
     // 体检报告 P0-2: session_start can't inject content itself (observation-only,
     // see comment above buildSessionContext), so it fetches + stashes; the next
     // before_prompt_build call for this session consumes the stash and injects it.
-    api.on("session_start", async (event, ctx) => {
+    onGated("session_start", async (event, ctx) => {
       const sid = sessionIdOf(event, ctx);
       if (!sid) return;
       // NOTE (2026-08-06): OpenClaw's session_start payload has NO `reason`
@@ -918,7 +942,7 @@ export default {
       }
     });
 
-    api.on("before_prompt_build", async (_event, ctx) => {
+    onGated("before_prompt_build", async (_event, ctx) => {
       const sid = sessionIdOf(_event, ctx);
       if (!sid) return;
       const pending = pendingSessionContext.get(sid);
@@ -929,7 +953,7 @@ export default {
 
     // 任务2:每轮 HCC 记忆注入 appendContext(尾部,不进 system prompt)。见上面
     // turnContextCache 一段的注释。
-    api.on("before_prompt_build", async (event, ctx) => {
+    onGated("before_prompt_build", async (event, ctx) => {
       const sid = sessionIdOf(event, ctx);
       if (!sid) return;
       // 阶段1:query 只用清洗后的人类话(注入块不再自我检索)。
@@ -993,7 +1017,7 @@ export default {
       return entry?.text ? { appendContext: entry.text } : undefined;
     });
 
-    api.on("session_end", async (event, ctx) => {
+    onGated("session_end", async (event, ctx) => {
       const sid = sessionIdOf(event, ctx);
       // Drop per-session caches for this session — no point keeping a recalled
       // context block or turn-tail block for a session that just ended.
@@ -1033,7 +1057,7 @@ export default {
       }
     });
 
-    api.on("before_compaction", async (event, ctx) => {
+    onGated("before_compaction", async (event, ctx) => {
       try {
         const content =
           `[OpenClaw before_compaction] session=${ctx.sessionId || "?"} agent=${ctx.agentId || agentId} ` +
