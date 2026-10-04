@@ -247,12 +247,23 @@ def digest_day(date: str, chunks: list[list[dict]], stats: dict) -> list[dict]:
                 Path(os.environ["DIGEST_SELFTEST_RAW"]).write_text(str(raw))
             continue
         for kind in ("episodes", "preferences", "facts"):
-            for it in d.get(kind) or []:
-                text = str((it or {}).get("text") or "").strip()
+            entries = d.get(kind)
+            if not isinstance(entries, list):
+                continue
+            for it in entries:
+                # 模型偶尔把条目写成纯字符串而不是 {"text","src"}:都接受,字符串没有来源编号
+                if isinstance(it, str):
+                    text, raw_src = it.strip(), []
+                elif isinstance(it, dict):
+                    text, raw_src = str(it.get("text") or "").strip(), it.get("src") or []
+                else:
+                    continue
                 if not text:
                     continue
-                src = [ch[i]["id"] for i in (it.get("src") or []) if isinstance(i, int) and 0 <= i < len(ch)]
-                items.append({"date": date, "type": kind[:-1] if kind != "facts" else "fact",
+                if not isinstance(raw_src, list):
+                    raw_src = [raw_src]
+                src = [ch[i]["id"] for i in raw_src if isinstance(i, int) and 0 <= i < len(ch)]
+                items.append({"date": date, "type": {"episodes": "episode", "preferences": "preference", "facts": "fact"}[kind],
                               "text": text, "sources": src})
                 stats[kind] += 1
     return items
