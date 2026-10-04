@@ -16,6 +16,6 @@ class HealthResponse(BaseModel):
 async def health_check() -> HealthResponse:
     return HealthResponse(
         status="ok",
-        version="0.2.0",
+        version="0.3.0",
         service="hanyan-cognitive-core",
     )
