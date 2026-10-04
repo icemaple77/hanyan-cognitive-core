@@ -125,8 +125,14 @@ def turn(payload: dict, notes: list[str]) -> str:
             "text": text, "source": "dsh",
             "event_id": event_id_for(payload.get("session_id", ""), text, time.time())}, timeout=1.5), notes)
 
-    ctx = _try("context", lambda: _req(f"{HCC}/context", {
-        "query": text, "user_id": USER_ID, "agent_id": AGENT_ID, "include_emotion": True}, timeout=2.5), notes)
+    # 2026-09-30 桌面端实测:/context 在会话冷启动时偶尔 >2.5s,重试一次兜住,
+    # 常态仍只调一次(HCC 本机实测 0.4~0.7s)。失败静默跳过,绝不拦截对话。
+    ctx = None
+    for _ in (1, 2):
+        ctx = _try("context", lambda: _req(f"{HCC}/context", {
+            "query": text, "user_id": USER_ID, "agent_id": AGENT_ID, "include_emotion": True}, timeout=2.5), notes)
+        if ctx is not None:
+            break
     if ctx and (ctx.get("context") or "").strip():
         parts.append(ctx["context"].strip())
         ids = [i for i in (ctx.get("memory_ids") or []) if i]

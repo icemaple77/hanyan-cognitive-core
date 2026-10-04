@@ -1,10 +1,10 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "/usr/bin/python3 /Users/michael/workspace/projects/HCC/hcc-dsh-hooks/hanyan_hook.py session-start", "timeout": 8 } ] }
+      { "hooks": [ { "type": "command", "command": "/usr/bin/python3 /Users/michael/workspace/projects/HCC/hcc-dsh-hooks/hanyan_hook.py session-start", "timeout": 12 } ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "/usr/bin/python3 /Users/michael/workspace/projects/HCC/hcc-dsh-hooks/hanyan_hook.py turn", "timeout": 6 } ] }
+      { "hooks": [ { "type": "command", "command": "/usr/bin/python3 /Users/michael/workspace/projects/HCC/hcc-dsh-hooks/hanyan_hook.py turn", "timeout": 9 } ] }
     ]
   }
 }
