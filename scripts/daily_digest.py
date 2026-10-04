@@ -307,7 +307,8 @@ def _is_duplicate(text: str) -> bool:
 
 def write_items(items: list[dict], stats: dict) -> None:
     """把摘要条目写进 HCC。带 digest 标签,回滚 = 把带该标签的行软删。"""
-    stats.update(written=0, skipped_dup=0, write_failed=0)
+    for k in ("written", "skipped_dup", "write_failed"):
+        stats.setdefault(k, 0)
     for it in items:
         text = (it.get("text") or "").strip()
         kind = it.get("type")
@@ -471,10 +472,19 @@ def main() -> int:
         with UmbrellaHold() as hold:
             stats["umbrella"] = "granted" if hold.granted else "not-granted"
             if hold.granted:
-                for date in sorted(by_day):
-                    all_items += digest_day(date, chunks_for_day(by_day[date]), stats)
+                # 知识巩固先做:它短,而且是做梦的正事;补历史可能要跑几个小时
                 if want_knowledge:
                     summarize_knowledge(a.knowledge, stats)
+                for date in sorted(by_day, reverse=True):  # 从近到远
+                    failed_before = stats["chunk_failed"]
+                    items = digest_day(date, chunks_for_day(by_day[date]), stats)
+                    all_items += items
+                    if a.write and not a.selftest:
+                        # 每天跑完立刻写库并记状态:长跑中途被打断,已完成的日子不白跑
+                        write_items(items, stats)
+                        state[date] = {"at": dt.datetime.now().isoformat(),
+                                       "status": "partial" if stats["chunk_failed"] > failed_before else "ok"}
+                        _save_state(state)
 
     # 一眼能看出"今天到底跑没跑":not-run(没拿到 umbrella)/ partial(有块丢了)/ ok / nothing-to-do
     if not by_day and not want_knowledge:
@@ -485,12 +495,6 @@ def main() -> int:
         stats["status"] = "partial"
     else:
         stats["status"] = "ok"
-
-    if a.write and not a.selftest and stats["status"] in ("ok", "partial"):
-        write_items(all_items, stats)
-        for date in by_day:
-            state[date] = {"at": dt.datetime.now().isoformat(), "status": stats["status"]}
-        _save_state(state)
 
     if a.write and not a.selftest:
         try:  # 记成做梦的一个阶段,/dream/status 和梦境面板看得到
