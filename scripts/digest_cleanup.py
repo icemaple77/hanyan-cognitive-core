@@ -5,6 +5,10 @@
 - 带"当前/今天/昨夜"的"事实" → 改成事件
 - 正文尾巴上漏出来的来源编号 → 去掉
 改动清单写到 ~/Backups/hcc/digest-cleanup-<时间>.jsonl。默认只统计,--apply 才动。
+
+⚠️ 直接改库必须同时更新 updated_at:这些记忆会导出成知识库 Markdown(QMD),sync_from_qmd
+每隔几分钟把文件读回库;库里的 updated_at 不比文件新,就会被文件里的旧 type/status 盖回去
+(2026-10-05 第一次清理没更新它,2 分钟后 74 条改动全被还原)。
 """
 from __future__ import annotations
 
@@ -49,7 +53,8 @@ async def main() -> int:
                 if a.apply:
                     await s.execute(text(
                         "update memories set status = 'discarded', "
-                        "tags = (coalesce(tags::jsonb, '[]'::jsonb) || to_jsonb(cast(:tag as text)))::json "
+                        "tags = (coalesce(tags::jsonb, '[]'::jsonb) || to_jsonb(cast(:tag as text)))::json, "
+                        "updated_at = (now() at time zone 'utc') "
                         "where id = :i"), {"i": mid, "tag": TAG})
                 continue
             new_type = dd.KIND_TO_TYPE.get(kind, mtype)
@@ -59,7 +64,8 @@ async def main() -> int:
             log.append({"id": str(mid), "action": "retyped" if new_type != mtype else "stripped", "from": mtype})
             if a.apply:
                 prefix = content[:13] if (content or "").startswith("[") else ""
-                await s.execute(text("update memories set type = :t, summary = :sm, content = :c where id = :i"),
+                await s.execute(text("update memories set type = :t, summary = :sm, content = :c, "
+                                     "updated_at = (now() at time zone 'utc') where id = :i"),
                                 {"t": new_type, "sm": new, "c": f"{prefix}{new}", "i": mid})
         if a.apply:
             await s.commit()
