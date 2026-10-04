@@ -351,6 +351,19 @@ def _get(path: str) -> dict:
         return json.load(r)
 
 
+def run_deep(stats: dict) -> None:
+    """先让网关跑当天的 Deep(给记忆打分、挑出值得巩固的组)。当天已跑过会直接返回。
+    Deep 和摘要是同一件事的两步:它挑,大模型写。失败不拦后面的摘要。"""
+    try:
+        req = urllib.request.Request(f"{HCC}/dream/deep", data=b"{}", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=900) as r:
+            d = json.load(r)
+        stats["deep"] = {"promoted": d.get("promoted"), "groups": len(d.get("knowledge_groups") or []),
+                         "skipped": bool(d.get("skipped") or d.get("already_ran"))}
+    except Exception:
+        stats["deep"] = "failed"
+
+
 def summarize_knowledge(limit: int, stats: dict) -> None:
     """做梦的知识巩固:把 Deep 挑出的记忆组(和存量模板空壳)交给大模型写成真正的知识。"""
     stats.update(knowledge_groups=0, knowledge_written=0, knowledge_empty=0, knowledge_failed=0)
@@ -474,6 +487,7 @@ def main() -> int:
             if hold.granted:
                 # 知识巩固先做:它短,而且是做梦的正事;补历史可能要跑几个小时
                 if want_knowledge:
+                    run_deep(stats)
                     summarize_knowledge(a.knowledge, stats)
                 for date in sorted(by_day, reverse=True):  # 从近到远
                     failed_before = stats["chunk_failed"]
