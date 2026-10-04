@@ -27,6 +27,7 @@ from datetime import datetime
 
 from sqlalchemy import String, cast, func, select
 
+from gateway.core.scope import scope_agent
 from core.forget import PROTECTED_TAGS
 from gateway.models import Memory, MemoryStatus
 
@@ -76,7 +77,7 @@ async def prune_exact_duplicates(
     返回 ``{"groups", "discarded", "skipped_protected", "by_source"}``。
     调用方负责 ``session.commit()``（dry_run 不写）。
     """
-    q = (
+    q = scope_agent(
         select(Memory)
         .where(Memory.status == MemoryStatus.ACTIVE)
         .where(func.length(Memory.content) >= min_len)

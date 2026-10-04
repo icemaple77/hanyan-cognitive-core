@@ -20,37 +20,12 @@ from gateway.core.fts import (
 )
 from gateway.core.rerank import RERANK_ENABLED, rerank as rerank_fn
 from gateway.core.rrf import reciprocal_rank_fusion
+from gateway.core.scope import PRIVATE_AGENT_PREFIX, scope_agent  # noqa: F401 (re-exported)
 from gateway.core.write_guard import SYSTEM_NOISE_TAG, find_exact_duplicate, is_system_noise
 from gateway.models import Memory, MemoryConflict
 from gateway.schemas.memory import MemoryCreate, MemoryUpdate, MemorySearch
 
 logger = logging.getLogger(__name__)
-
-# 私有命名空间:agent_id 以此开头的记忆(专家 agent 的个人库)只有指名该 agent_id 才读得到;
-# 不限 agent 的检索(含烟的跨运行时检索、/context)一律看不到它们。
-PRIVATE_AGENT_PREFIX = "expert:"
-
-
-def scope_agent(stmt, agent_id):
-    """给查询加 agent 范围:指名则只看那个 agent;不指名则排除私有命名空间。"""
-    if agent_id:
-        return stmt.where(Memory.agent_id == agent_id)
-    return stmt.where(func.coalesce(Memory.agent_id, "").notlike(PRIVATE_AGENT_PREFIX + "%"))
-
-# OpenClaw's tool_result_persist hook auto-logs every tool call's raw output as a
-# memory (importance=0.3 by default) — with thousands of these accumulated, they
-# drown out real content in search results (recursive tool-log-of-a-tool-log
-# quoting, near-zero relevance). exclude_noise (default on) drops them below this
-# threshold unless the caller explicitly asks for type="tool_result"; anything
-# manually promoted above the threshold stays searchable.
-NOISE_TYPE = "tool_result"
-NOISE_IMPORTANCE_THRESHOLD = 0.5
-
-# Cosine distance below which a just-stored memory is considered "same topic"
-# as an existing active one of the same type/user/agent scope (see
-# _flag_stale_duplicates). Calibrated loosely — this is a lightweight staleness
-# heuristic, not true contradiction detection (see that method's docstring).
-STALE_DISTANCE_THRESHOLD = 0.25
 
 
 class MemoryService:

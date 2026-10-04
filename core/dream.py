@@ -47,6 +47,7 @@ from gateway.core.database import async_session
 from gateway.core.events import get_event_bus
 from gateway.models import DreamRun, DreamSignal, EmotionSnapshot, Memory, MemoryStatus
 from gateway.core.dedupe import prune_chatroom_sessions, prune_exact_duplicates
+from gateway.core.scope import scope_agent
 
 logger = logging.getLogger(__name__)
 
@@ -297,7 +298,7 @@ class DreamEngine:
         async with self._session_factory() as session:
             cutoff = started - timedelta(hours=self._settings.dream_light_lookback_hours)
             result = await session.execute(
-                select(Memory).where(Memory.status == MemoryStatus.ACTIVE).where(Memory.created_at >= cutoff)
+                scope_agent(select(Memory).where(Memory.status == MemoryStatus.ACTIVE).where(Memory.created_at >= cutoff))
             )
             memories = list(result.scalars().all())
 
@@ -490,7 +491,7 @@ class DreamEngine:
 
             cutoff = started - timedelta(days=self._settings.dream_rem_lookback_days)
             result = await session.execute(
-                select(Memory).where(Memory.status == MemoryStatus.ACTIVE).where(Memory.created_at >= cutoff)
+                scope_agent(select(Memory).where(Memory.status == MemoryStatus.ACTIVE).where(Memory.created_at >= cutoff))
             )
             # 语义聚类不再要求"必须有标签"——那是 tag overlap 时代的前提,
             # 而没打标签的记忆恰恰可能是最该被发现的那些。
@@ -761,7 +762,7 @@ class DreamEngine:
 
             cutoff = started - timedelta(days=self._settings.dream_max_age_days)
             result = await session.execute(
-                select(Memory).where(Memory.status == MemoryStatus.ACTIVE).where(Memory.created_at >= cutoff)
+                scope_agent(select(Memory).where(Memory.status == MemoryStatus.ACTIVE).where(Memory.created_at >= cutoff))
             )
             candidates = list(result.scalars().all())
 
