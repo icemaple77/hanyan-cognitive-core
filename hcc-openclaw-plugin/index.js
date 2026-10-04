@@ -21,6 +21,8 @@ const CACHE_MAX_SESSIONS = 100; // FIFO cap for both pendingSessionContext and t
 const HCC_EVENTS_DIR =
   process.env.HCC_EVENTS_DIR || path.join(os.homedir(), ".openclaw/workspace/memory/hcc-events");
 const CACHE_INVALIDATE_MARKER = path.join(HCC_EVENTS_DIR, "cache_invalidate.marker");
+// 阶段1(2026-09-28):每轮检索可观测轨迹(JSONL)。写失败只记日志,绝不影响注入。
+const RETRIEVAL_TRACE_FILE = path.join(HCC_EVENTS_DIR, "retrieval-trace.jsonl");
 
 // Effective timeout, overridable via config/env (see resolveConfig). hccFetch
 // falls back to this when a call doesn't pass timeoutMs explicitly.
@@ -384,7 +386,126 @@ function sessionIdOf(event, ctx) {
 // 里,拉不拉新都不影响历史轮次的前缀)。
 const APPEND_CONTEXT_MAX_CHARS = 1500;
 const APPEND_CONTEXT_THROTTLE_TURNS = 3;
-const turnContextCache = new Map(); // sessionId -> { text, turnsSinceRefresh, cachedAt }
+const turnContextCache = new Map(); // sessionId -> { text, turnsSinceRefresh, cachedAt, hits }
+
+// --- 阶段1(2026-09-28):切断查询污染回路 ---
+//
+// 缺陷:每轮 appendContext 的记忆块被 OpenClaw 拼进当轮 user 消息尾部,下一轮
+// lastUserMessageText() 又把它当"用户问题"原样喂回 /context 做检索——注入内容
+// 反过来成为检索 query,把上一轮的注入结果再检索一遍(自我强化污染回路)。
+// 修法:(1) 注入块首尾打 HTML 注释标记,便于下游识别/剥离;(2) extractHumanText
+// 从 user 消息里剥掉所有注入/内部上下文段,只留自然语言;(3) 每轮检索 query 只用
+// 清洗后的最近 1–2 轮人类话,并限长 ≤300 字。
+const INJECT_BEGIN = "<!-- hcc:inject:begin -->";
+const INJECT_END = "<!-- hcc:inject:end -->";
+const INTERNAL_CONTEXT_MARKERS = [
+  ["<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>", "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>"],
+  ["[[OPENCLAW_INTERNAL_CONTEXT_BEGIN]]", "[[OPENCLAW_INTERNAL_CONTEXT_END]]"],
+];
+const QUERY_MAX_CHARS = 300; // 每轮检索 query 上限,超出取尾部(保留最近的)
+const QUERY_MAX_TURNS = 2; // query 取用的最近人类轮数
+
+function wrapInjectBlock(text) {
+  if (!text) return text;
+  return `${INJECT_BEGIN}\n${text}\n${INJECT_END}`;
+}
+
+// 删掉成对标记之间的内容;begin 出现却没有对应 end(被截断的注入块)→ 从 begin
+// 删到结尾。纯字符串扫描,不走正则回溯。
+function stripPairedBlocks(s, begin, end) {
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const b = s.indexOf(begin, i);
+    if (b === -1) return out + s.slice(i);
+    out += s.slice(i, b);
+    const e = s.indexOf(end, b + begin.length);
+    if (e === -1) return out; // 未闭合:后面全是注入残留,整段丢弃
+    i = e + end.length;
+  }
+}
+
+// 段级注入标记:命中这些标题后,整段丢弃到下一个 "## " 标题或内容结尾。
+const INJECT_SECTION_HEADS = [
+  "## Relevant Memories",
+  "## Knowledge",
+  "## Emotional State",
+  "[HCC 记忆回顾 / auto-recalled memories]",
+];
+const INJECT_LINE_RE = /^\s*\[对这句话的即时感受\]/;
+
+// 从 user 消息里剥掉注入/内部上下文,只留自然语言。
+function extractHumanText(text) {
+  if (typeof text !== "string" || !text) return "";
+  let s = stripPairedBlocks(text, INJECT_BEGIN, INJECT_END);
+  for (const [b, e] of INTERNAL_CONTEXT_MARKERS) s = stripPairedBlocks(s, b, e);
+  const kept = [];
+  let dropping = false;
+  for (const line of s.split("\n")) {
+    const t = line.trim();
+    if (t.startsWith("## ")) {
+      dropping = INJECT_SECTION_HEADS.some(
+        (h) => t === h || t.startsWith(h + " ") || t.startsWith(h + ":")
+      );
+      if (dropping) continue;
+      kept.push(line);
+      continue;
+    }
+    if (!dropping && INJECT_SECTION_HEADS.includes(t)) {
+      dropping = true;
+      continue;
+    }
+    if (INJECT_LINE_RE.test(t)) continue;
+    if (dropping) continue;
+    kept.push(line);
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// 每轮检索 query:最近 QUERY_MAX_TURNS 轮人类话(已清洗),总长 ≤QUERY_MAX_CHARS,
+// 超出取尾部(保留最近的)。
+function recentHumanQuery(messages, maxTurns = QUERY_MAX_TURNS, maxChars = QUERY_MAX_CHARS) {
+  if (!Array.isArray(messages)) return "";
+  const turns = [];
+  for (let i = messages.length - 1; i >= 0 && turns.length < maxTurns; i--) {
+    if (messages[i]?.role !== "user") continue;
+    const clean = extractHumanText(extractMessageText(messages[i]));
+    if (clean) turns.push(clean);
+  }
+  const query = turns.reverse().join("\n").trim();
+  return query.length > maxChars ? query.slice(-maxChars) : query;
+}
+
+// 阶段1 可观测:每轮落一行 JSONL 到 retrieval-trace.jsonl。
+// 写失败只记日志(fire-and-forget),绝不能影响注入。
+async function appendRetrievalTrace(record, log) {
+  try {
+    await mkdir(HCC_EVENTS_DIR, { recursive: true });
+    await appendFile(RETRIEVAL_TRACE_FILE, JSON.stringify(record) + "\n", "utf8");
+  } catch (err) {
+    log?.error?.(`[hcc-memory] retrieval trace write failed: ${err.message}`);
+  }
+}
+
+// /context 响应只有 memory_ids,没有分数。分数若存在(provider_metadata 里),
+// 尽力取到;取不到则 score=null。
+function hitsFromContextResponse(data) {
+  const ids = Array.isArray(data?.memory_ids) ? data.memory_ids.filter(Boolean) : [];
+  const scores = new Map();
+  const walk = (node, depth) => {
+    if (!node || depth > 4) return;
+    if (Array.isArray(node)) {
+      for (const n of node) walk(n, depth + 1);
+      return;
+    }
+    if (typeof node !== "object") return;
+    const id = node.id || node.memory_id;
+    if (id && typeof node.score === "number") scores.set(String(id), node.score);
+    for (const v of Object.values(node)) walk(v, depth + 1);
+  };
+  walk(data?.metadata?.provider_metadata, 0);
+  return ids.map((id) => ({ id: String(id), score: scores.has(String(id)) ? scores.get(String(id)) : null }));
+}
 
 // P3-2: sse_monitor.py touches CACHE_INVALIDATE_MARKER's mtime whenever a
 // memory.created/updated/deleted event arrives. If that mtime is newer than
@@ -480,7 +601,9 @@ async function fetchTurnContextBlock(baseUrl, { userId, agentId }, query, log) {
         }
       }
     }
-    return text.length > APPEND_CONTEXT_MAX_CHARS ? text.slice(0, APPEND_CONTEXT_MAX_CHARS) : text;
+    // 先按原语义限长内容,再包标记(标记是固定开销,不计入内容配额)。
+    const body = text.length > APPEND_CONTEXT_MAX_CHARS ? text.slice(0, APPEND_CONTEXT_MAX_CHARS) : text;
+    return { text: wrapInjectBlock(body), hits: hitsFromContextResponse(data) };
   } catch (err) {
     log.error?.(`[hcc-memory] before_prompt_build turn context fetch failed: ${err.message}`);
     return undefined; // undefined = 请求失败,区分于请求成功但检索为空的 ""
@@ -502,7 +625,7 @@ function renderSessionContext(memories, emotion) {
         (emotion.expression_hint ? ` — ${emotion.expression_hint}` : "")
     );
   }
-  return lines.join("\n");
+  return wrapInjectBlock(lines.join("\n"));
 }
 
 async function buildSessionContext(baseUrl, { userId, agentId, sessionRecallEnabled, sessionRecallLimit, emotionEnabled }, log) {
@@ -723,10 +846,15 @@ export default {
     api.on("before_prompt_build", async (event, ctx) => {
       const sid = sessionIdOf(event, ctx);
       if (!sid) return;
-      const query = lastUserMessageText(event?.messages);
+      // 阶段1:query 只用清洗后的最近人类话(注入块不再自我检索)。
+      const query = recentHumanQuery(event?.messages);
       if (!query) return;
+      const rawQueryHead = lastUserMessageText(event?.messages).slice(0, 120);
 
       let entry = turnContextCache.get(sid);
+      let throttled = false;
+      let hits = Array.isArray(entry?.hits) ? entry.hits : [];
+      let injected = Boolean(entry?.text);
       const shouldRefresh =
         !entry ||
         entry.turnsSinceRefresh >= APPEND_CONTEXT_THROTTLE_TURNS ||
@@ -736,18 +864,38 @@ export default {
         if (block === undefined) {
           // HCC 请求失败:保留旧块(若有),节流计数不清零,下一轮立刻重试
           // (参考 Hermes _run_prefetch 失败分支不更新 _last_refresh_turn 的做法)。
-        } else if (block) {
-          entry = { text: block, turnsSinceRefresh: 0, cachedAt: Date.now() };
+          hits = Array.isArray(entry?.hits) ? entry.hits : [];
+          injected = Boolean(entry?.text);
+        } else if (block.text) {
+          entry = { text: block.text, turnsSinceRefresh: 0, cachedAt: Date.now(), hits: block.hits };
           cacheSet(turnContextCache, sid, entry);
+          hits = block.hits;
+          injected = true;
         } else {
           // 请求成功但没检索到相关记忆:不是故障,清掉旧块——继续注入一条与
           // 当前问题无关的陈旧记忆,比不注入更容易误导对话。
           turnContextCache.delete(sid);
           entry = undefined;
+          hits = [];
+          injected = false;
         }
       } else {
         entry.turnsSinceRefresh += 1;
+        throttled = true; // 没重新检索,本轮沿用缓存块
       }
+      // 可观测:fire-and-forget,写失败只记日志。
+      appendRetrievalTrace(
+        {
+          ts: new Date().toISOString(),
+          sessionId: sid,
+          rawQueryHead,
+          cleanQuery: query,
+          hits,
+          injected,
+          throttled,
+        },
+        log
+      );
       return entry?.text ? { appendContext: entry.text } : undefined;
     });
 
@@ -869,6 +1017,13 @@ export default {
     };
 
     api.on("tool_result_persist", (event, ctx) => {
+      // 2026-09-29 公子拍板:tool_result **源头不落库**(A+B 里的 A)。
+      // 依据:2164 条 active tool_result 里 **0 条**达检索门槛(importance 全
+      // 0.3–0.4 < 0.5),召回率 9.6%(conversation 是 47%)——日常检索根本
+      // 捞不到,却持续吞写入量与库容。有价值的内容应提炼成 knowledge,
+      // 而不是以「工具输出原文」的形态躺着。
+      // 要临时排查时:HCC_TOOL_RESULT_PERSIST_ENABLED=1 可开回。
+      if (process.env.HCC_TOOL_RESULT_PERSIST_ENABLED !== "1") return;
       const toolName = event.toolName || ctx.toolName || "unknown_tool";
       if (TOOL_RESULT_PERSIST_DENYLIST.has(toolName)) return;
       if (TOOL_RESULT_NEVER_PERSIST.has(toolName)) return;
