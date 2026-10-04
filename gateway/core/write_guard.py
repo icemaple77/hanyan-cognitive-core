@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -51,3 +52,18 @@ async def find_exact_duplicate(session, *, content: str, window_hours: int) -> M
     if row is not None:
         logger.info("store dedupe: exact duplicate within %sh → memory %s", window_hours, row.id)
     return row
+
+
+# 系统自己产生、不该当记忆检索的记录(2026-10-04 盘点,存量已由
+# scripts/purge_pollution.py 软删)。入库时直接标 discarded:留痕可审计,但不进检索。
+_SYSTEM_NOISE_RE = re.compile(
+    r"^(?:\[OpenClaw session_end\]"
+    r"|user: \[(?:Inter-session message|Subagent Context)"
+    r"|User: \[IMPORTANT: Background process)"
+)
+SYSTEM_NOISE_TAG = "system_noise"
+
+
+def is_system_noise(content: str | None) -> bool:
+    """这条内容是不是系统通知/跨会话转发这类噪音。"""
+    return bool(content) and _SYSTEM_NOISE_RE.match(content) is not None

@@ -20,7 +20,7 @@ from gateway.core.fts import (
 )
 from gateway.core.rerank import RERANK_ENABLED, rerank as rerank_fn
 from gateway.core.rrf import reciprocal_rank_fusion
-from gateway.core.write_guard import find_exact_duplicate
+from gateway.core.write_guard import SYSTEM_NOISE_TAG, find_exact_duplicate, is_system_noise
 from gateway.models import Memory, MemoryConflict
 from gateway.schemas.memory import MemoryCreate, MemoryUpdate, MemorySearch
 
@@ -56,6 +56,9 @@ class MemoryService:
         # callers that still pass it don't break.
         payload.pop("embedding", None)
         memory = Memory(**payload)
+        if is_system_noise(memory.content):
+            memory.status = "discarded"
+            memory.tags = [*(memory.tags or []), SYSTEM_NOISE_TAG]
 
         # --- 写入侧预防（2026-09-29；默认关，见 core/config.py store_*）---
         # 先查重（省一次嵌入计算），再算向量。
