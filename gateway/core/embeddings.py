@@ -35,6 +35,21 @@ __all__ = ["embed_text", "EMBEDDING_DIM"]
 # 不符、文档语义检索静默全灭。现在建表维度与产出维度是同一个字段。
 from core.config import core_settings
 
+# 进程内共用一个连接池(httpx.Client 线程安全)。此前每次嵌入都 httpx.post() 新开一条
+# 连接;采集器一批写入时几十个嵌入并发,瞬时把 launchd 默认的 256 个句柄打满,
+# 连带 soul 感知、Redis、甚至 import 都报 "Too many open files"(2026-10-04 日志)。
+_http_client = None
+
+
+def _http():
+    global _http_client
+    if _http_client is None:
+        import httpx
+
+        _http_client = httpx.Client(
+            limits=httpx.Limits(max_connections=16, max_keepalive_connections=8))
+    return _http_client
+
 EMBEDDING_PROVIDER = core_settings.embedding_provider
 EMBEDDING_MODEL = core_settings.embedding_model
 EMBEDDING_DIM = core_settings.embedding_dim
@@ -133,9 +148,7 @@ def _embed_ollama(text: str) -> list[float]:
     genuinely wants the hash backend sets HCC_EMBEDDING_PROVIDER=hash, which
     routes here-around entirely.
     """
-    import httpx
-
-    resp = httpx.post(
+    resp = _http().post(
         f"{OLLAMA_BASE_URL}/api/embeddings",
         json={"model": EMBEDDING_MODEL, "prompt": text},
         timeout=30,
@@ -175,12 +188,10 @@ def _embed_soul(text: str, is_query: bool = False) -> list[float]:
     失败时**抛异常**,不退化成别的后端:MemoryService.create 会接住并存 NULL,
     hybrid_search 会退成纯 BM25 —— 这是既有的正确姿势。
     """
-    import httpx
-
     if is_query and EMBEDDING_QUERY_INSTRUCTION:
         text = EMBEDDING_QUERY_INSTRUCTION + text
 
-    resp = httpx.post(
+    resp = _http().post(
         f"{core_settings.soul_service_url.rstrip('/')}/soul/embed",
         json={"texts": [text]},
         timeout=30,   # 不用 soul_service_timeout(2s):那是给情绪感知的,

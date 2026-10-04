@@ -45,19 +45,36 @@ def make_event_id(text: str, source: str) -> str:
     return hashlib.sha256(f"{source}|{text}".encode()).hexdigest()[:16]
 
 
+# 每个事件循环共用一个连接池,不再每次调用新建 AsyncClient(句柄耗尽见 embeddings._http)。
+_client = None
+_client_loop = None
+
+
+def _shared_client():
+    global _client, _client_loop
+    import asyncio
+
+    import httpx
+
+    loop = asyncio.get_running_loop()
+    if _client is None or _client_loop is not loop or _client.is_closed:
+        _client = httpx.AsyncClient(
+            limits=httpx.Limits(max_connections=16, max_keepalive_connections=8))
+        _client_loop = loop
+    return _client
+
+
 async def _call(method: str, path: str, payload: dict | None = None) -> dict[str, Any] | None:
     if not core_settings.soul_service_enabled:
         return None
     try:
-        import httpx
-
         url = f"{core_settings.soul_service_url}{path}"
         timeout = core_settings.soul_service_timeout * _TIMEOUT_MARGIN
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = (await client.post(url, json=payload or {}) if method == "POST"
-                    else await client.get(url))
-            resp.raise_for_status()
-            data = resp.json()
+        client = _shared_client()
+        resp = (await client.post(url, json=payload or {}, timeout=timeout) if method == "POST"
+                else await client.get(url, timeout=timeout))
+        resp.raise_for_status()
+        data = resp.json()
         return data if isinstance(data, dict) else None
     except Exception:
         logger.warning("soul v2 unreachable (%s %s), degrading", method, path, exc_info=True)
