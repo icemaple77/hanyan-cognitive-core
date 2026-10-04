@@ -134,6 +134,7 @@ class DocIndexSync:
         from gateway.models import Document
         from gateway.core.embeddings import document_embedding_text, embed_text
         from gateway.services.document_service import DocumentService
+        from scanner.parser import PdfSkipped, parse_pdf_file
 
         stats = {"scanned": 0, "changed": 0, "touched": 0, "deleted": 0, "errors": 0}
         for collection, root_str in DEFAULT_COLLECTIONS.items():
@@ -221,14 +222,25 @@ class DocIndexSync:
                         raw, digest = await asyncio.to_thread(self._read_and_hash, path)
                         if known_hash.get(rel) == digest:
                             # 内容没变(生成器只是重写了文件)→ 只刷新 mtime,免掉嵌入
-                            await session.execute(
-                                update(Document)
-                                .where(Document.collection == collection, Document.path == rel)
-                                .values(mtime=file_mtime_utc(path)))
+                            async with session.begin_nested():
+                                await session.execute(
+                                    update(Document)
+                                    .where(Document.collection == collection, Document.path == rel)
+                                    .values(mtime=file_mtime_utc(path)))
                             stats["touched"] = stats.get("touched", 0) + 1
                             continue
-                        content = raw.decode("utf-8", errors="ignore")
-                        title = path.stem
+                        if path.suffix.lower() == ".pdf":
+                            # PDF 要抽文本层,不能把原始字节当文本存(里面有 0x00,PG 拒收)
+                            try:
+                                doc = await asyncio.to_thread(parse_pdf_file, path)
+                            except PdfSkipped:
+                                stats["skipped_pdf"] = stats.get("skipped_pdf", 0) + 1
+                                continue
+                            title, content = doc.title, doc.content
+                        else:
+                            content = raw.decode("utf-8", errors="ignore")
+                            title = path.stem
+                        content = content.replace("\x00", "")
                         emb = None
                         if embed:
                             try:
@@ -236,10 +248,13 @@ class DocIndexSync:
                                     embed_text, document_embedding_text(title, content))
                             except Exception:  # 嵌入失败不该挡住 BM25 索引
                                 logger.warning("doc index: 嵌入失败 %s", rel, exc_info=True)
-                        await svc.upsert(
-                            collection=collection, path=rel, title=title, content=content,
-                            content_hash=digest, embedding=emb, mtime=file_mtime_utc(path),
-                        )
+                        # 每个文件一个保存点:一个文件写库失败只回滚它自己,
+                        # 不然整个会话作废,同一轮里后面的文件全部连带失败。
+                        async with session.begin_nested():
+                            await svc.upsert(
+                                collection=collection, path=rel, title=title, content=content,
+                                content_hash=digest, embedding=emb, mtime=file_mtime_utc(path),
+                            )
                         stats["changed"] += 1
                     except Exception:
                         stats["errors"] += 1
