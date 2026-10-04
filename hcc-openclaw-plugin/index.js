@@ -522,6 +522,40 @@ async function cacheStaleByInvalidationMarker(cachedAt) {
   }
 }
 
+// 机器生成的轮次(系统提示 / exec 完成通知 / agent 间转发 / 定时任务):不是公子在说话,
+// 拿它们当 query 只会检索出一堆无关记忆再塞进 prompt(2026-10-04 轨迹里 [System]、
+// [OpenClaw exec completion] 轮每轮都注入 30 条)。这类轮次直接不注入。
+const SHORT_FOLLOWUP_CHARS = 6;
+const MACHINE_TURN_PREFIXES = [
+  "[System]",
+  "[OpenClaw exec completion]",
+  "[Inter-session message]",
+  "Agent-to-agent announce",
+  "[IMPORTANT: You are running as a scheduled cron job",
+];
+function isMachineTurn(text) {
+  const t = String(text || "").trimStart();
+  return MACHINE_TURN_PREFIXES.some((p) => t.startsWith(p));
+}
+
+// before_prompt_build 事件里 messages 是"本轮之前"的历史,当前这句话在
+// currentUserMessage(旧版本回退到 prompt)里。只看 messages 会查成上一句——新会话首轮
+// 为空,之后每轮落后一轮(实测:发"在吗"检索的却是上一个话题)。
+// query = 当前这句;当前句极短时才补上一轮人话承接语境。总长 ≤QUERY_MAX_CHARS 取尾部。
+function currentTurnText(event) {
+  const raw = typeof event?.currentUserMessage === "string" ? event.currentUserMessage : String(event?.prompt || "");
+  return raw;
+}
+function turnQuery(event, rawCurrent = currentTurnText(event)) {
+  const current = extractHumanText(rawCurrent);
+  if (!current) return recentHumanQuery(event?.messages); // 旧事件形状:没有当前句,退回历史
+  // 上一轮话只在当前句极短(像"好""继续"这类接话)时才带上:否则几小时前的旧话题
+  // 会把"我回来啦,今天好累"这种新开场带偏。
+  const prev = current.length < SHORT_FOLLOWUP_CHARS ? recentHumanQuery(event?.messages, 1) : "";
+  const q = [prev, current].filter(Boolean).join("\n").trim();
+  return q.length > QUERY_MAX_CHARS ? q.slice(-QUERY_MAX_CHARS) : q;
+}
+
 function lastUserMessageText(messages) {
   if (!Array.isArray(messages)) return "";
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -846,10 +880,18 @@ export default {
     api.on("before_prompt_build", async (event, ctx) => {
       const sid = sessionIdOf(event, ctx);
       if (!sid) return;
-      // 阶段1:query 只用清洗后的最近人类话(注入块不再自我检索)。
-      const query = recentHumanQuery(event?.messages);
+      // 阶段1:query 只用清洗后的人类话(注入块不再自我检索)。
+      const rawCurrent = currentTurnText(event);
+      if (isMachineTurn(rawCurrent)) {
+        appendRetrievalTrace(
+          { ts: new Date().toISOString(), sessionId: sid, rawQueryHead: rawCurrent.slice(0, 120), cleanQuery: "", hits: [], injected: false, throttled: false, skipped: "machine-turn" },
+          log
+        );
+        return;
+      }
+      const query = turnQuery(event, rawCurrent);
       if (!query) return;
-      const rawQueryHead = lastUserMessageText(event?.messages).slice(0, 120);
+      const rawQueryHead = (rawCurrent || lastUserMessageText(event?.messages)).slice(0, 120);
 
       let entry = turnContextCache.get(sid);
       let throttled = false;
