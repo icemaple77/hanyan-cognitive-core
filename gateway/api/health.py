@@ -24,7 +24,7 @@ async def health_check() -> HealthResponse:
     degraded = report.get("checked") and not report.get("ok")
     return HealthResponse(
         status="degraded" if degraded else "ok",
-        version="0.3.0",
+        version="0.3.1",
         service="hanyan-cognitive-core",
         vector_dims=report if report.get("checked") else None,
     )

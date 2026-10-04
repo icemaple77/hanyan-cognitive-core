@@ -310,7 +310,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Hanyan Cognitive Core",
     description="Memory Operating System for AI Agents",
-    version="0.3.0",
+    version="0.3.1",
     lifespan=lifespan,
 )
 

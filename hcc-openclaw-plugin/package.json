@@ -1,6 +1,6 @@
 {
   "name": "hcc-memory",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "OpenClaw memory plugin backed by HCC (Hanyan Cognitive Core) REST API",
   "type": "module",
   "main": "./index.js",

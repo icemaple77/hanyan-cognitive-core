@@ -1,6 +1,6 @@
 [project]
 name = "hanyan-cognitive-core"
-version = "0.3.0"
+version = "0.3.1"
 description = "Memory Operating System for AI Agents"
 requires-python = ">=3.11"
 dependencies = [
