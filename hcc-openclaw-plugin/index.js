@@ -558,16 +558,31 @@ async function cacheStaleByInvalidationMarker(cachedAt) {
 // 拿它们当 query 只会检索出一堆无关记忆再塞进 prompt(2026-10-04 轨迹里 [System]、
 // [OpenClaw exec completion] 轮每轮都注入 30 条)。这类轮次直接不注入。
 const SHORT_FOLLOWUP_CHARS = 6;
-const MACHINE_TURN_PREFIXES = [
+// 机器轮次的标记。只看"开头是不是它"会漏:运行时常在前面加时间戳/信封行,
+// 专员回传、异步命令完成这几种也不在最初的清单里(2026-10-05 轨迹:这些轮次拿报告
+// 末尾 300 字当 query,检索出一堆无关记忆照样注入)。改成在开头一小段里找标记。
+const MACHINE_TURN_MARKERS = [
   "[System]",
   "[OpenClaw exec completion]",
   "[Inter-session message]",
+  "[Subagent Context]",
+  "[Queued user message",
+  "[Request interrupted",
   "Agent-to-agent announce",
+  "An async command you ran earlier has completed",
+  "command completion event was triggered",
   "[IMPORTANT: You are running as a scheduled cron job",
+  "[cron:",
 ];
+const MACHINE_TURN_SCAN_CHARS = 400;
 function isMachineTurn(text) {
-  const t = String(text || "").trimStart();
-  return MACHINE_TURN_PREFIXES.some((p) => t.startsWith(p));
+  const head = String(text || "").trimStart().slice(0, MACHINE_TURN_SCAN_CHARS);
+  return MACHINE_TURN_MARKERS.some((p) => head.includes(p));
+}
+
+// 子任务会话(sessionKey 里带 :subagent:)是干活的临时工,不是含烟在和公子说话:不注入、不入库。
+function isSubagentSession(event, ctx) {
+  return String(ctx?.sessionKey || event?.sessionKey || "").includes(":subagent:");
 }
 
 // before_prompt_build 事件里 messages 是"本轮之前"的历史,当前这句话在
@@ -834,6 +849,7 @@ export default {
       api.on(name, (event, ctx, ...rest) => {
         const aid = agentOf(event, ctx);
         if (aid && !hccAgents.has(aid)) return undefined;
+        if (isSubagentSession(event, ctx)) return undefined;
         return fn(event, ctx, ...rest);
       });
 
