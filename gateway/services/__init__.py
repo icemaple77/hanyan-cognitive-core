@@ -3,17 +3,24 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
+from functools import reduce
 from typing import Optional
 
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import core_settings
 from gateway.core.embeddings import EMBEDDING_MODEL, embed_text, memory_embedding_text
 from gateway.core.events import publish_conflict_event
-from gateway.core.fts import tokenize_for_fts, BM25_MAX_QUERY_TOKENS
+from gateway.core.folding import apply_folding_and_diversity
+from gateway.core.fts import (
+    bm25_query_tokens,
+    BM25_MAX_OR_QUERY_TOKENS,
+    BM25_MAX_QUERY_TOKENS,
+)
 from gateway.core.rerank import RERANK_ENABLED, rerank as rerank_fn
 from gateway.core.rrf import reciprocal_rank_fusion
+from gateway.core.write_guard import find_exact_duplicate
 from gateway.models import Memory, MemoryConflict
 from gateway.schemas.memory import MemoryCreate, MemoryUpdate, MemorySearch
 
@@ -49,6 +56,19 @@ class MemoryService:
         # callers that still pass it don't break.
         payload.pop("embedding", None)
         memory = Memory(**payload)
+
+        # --- 写入侧预防（2026-09-29；默认关，见 core/config.py store_*）---
+        # 先查重（省一次嵌入计算），再算向量。
+        # tool_result 已在源头不落库（插件侧 tool_result_persist），所以这里不做截断
+        # —— 源头关了就别再截断，两者是替代关系。
+        duplicate = await find_exact_duplicate(
+            self.session,
+            content=memory.content or "",
+            window_hours=core_settings.store_dedupe_window_hours,
+        )
+        if duplicate is not None:
+            return duplicate
+
         text = memory_embedding_text(memory.content, memory.summary)
         try:
             memory.embedding = await asyncio.to_thread(embed_text, text)
@@ -192,10 +212,26 @@ class MemoryService:
 
         Multiplies each item's ``rrf_score`` by a recency-decay factor
         (``0.5 ** (age_days / half_life)``, see ``retrieval_recency_half_life_days``)
-        , a per-``Memory.source`` weight (``retrieval_source_weights``) and
-        ``importance ** retrieval_importance_exponent``, then re-sorts. Multiplicative, not a replacement, so topical relevance from
-        BM25+vector stays the dominant signal — this only breaks ties/near-ties
-        in favor of newer, non-bulk-migrated memories.
+        and a per-``Memory.source`` weight (``retrieval_source_weights``), then
+        re-sorts. Multiplicative, not a replacement, so topical relevance from
+        BM25+vector stays the dominant signal — this only nudges newer,
+        non-bulk-migrated memories within a near-tie.
+
+        ``importance`` is **not** multiplied in (phase3 fix): ``0.95 ** 0.5`` vs
+        ``0.4 ** 0.5`` is a 5.6x gap, which swamped topical relevance inside
+        RRF's near-tie band and (measured) lifted the emergency-contact chain to
+        #2 on a "permanent commitment" query. It is now applied as a
+        **tie-break only**: candidates whose ``rrf_score`` is within a relative
+        ``retrieval_importance_tiebreak_band`` (default 5%) of the group's top
+        are re-ordered by descending ``importance``; outside that band the
+        primary order is untouched. ``retrieval_importance_exponent <= 0``
+        disables the tie-break entirely.
+
+        Recency and source stay multiplicative (unchanged defaults) rather than
+        becoming tie-breaks too: their calibrated effects are small and
+        monotone (60-day half-life; one 0.5x source weight), whereas importance's
+        spread was the outlier that actually inverted rankings. Keeping the
+        blast radius to the one broken signal.
         """
         if not fused:
             return
@@ -209,16 +245,36 @@ class MemoryService:
         for item in fused:
             memory = item["memory"]
             weight = core_settings.retrieval_source_weights.get(memory.source, 1.0)
-            if exp > 0:
-                # importance 参与重排。此前它完全不参与,后果见 config 里那段注释:
-                # 0.95 的策展知识被 0.4 的对话碎片压到第 6。
-                weight *= max(0.05, memory.importance or 0.5) ** exp
             if core_settings.retrieval_recency_weighting_enabled and memory.created_at:
                 age_days = max(0.0, (now - memory.created_at).total_seconds() / 86400.0)
                 weight *= 0.5 ** (age_days / half_life)
             item["rrf_score"] *= weight
 
         fused.sort(key=lambda item: item["rrf_score"], reverse=True)
+
+        band = core_settings.retrieval_importance_tiebreak_band
+        if exp <= 0 or band <= 0:
+            return
+
+        def _importance(item: dict) -> float:
+            value = getattr(item["memory"], "importance", None)
+            return 0.5 if value is None else float(value)
+
+        # Greedy near-tie grouping against the group's top score, then a stable
+        # re-order by importance inside each group. Compared to the group top
+        # (not the previous item) so a slowly-decaying tail can't chain into one
+        # giant "tie" spanning half the list.
+        index = 0
+        total = len(fused)
+        while index < total:
+            top = fused[index]["rrf_score"]
+            denom = abs(top) if abs(top) > 1e-12 else 1e-12
+            end = index + 1
+            while end < total and (top - fused[end]["rrf_score"]) / denom < band:
+                end += 1
+            if end - index > 1:
+                fused[index:end] = sorted(fused[index:end], key=_importance, reverse=True)
+            index = end
 
     async def semantic_search(
         self,
@@ -228,6 +284,7 @@ class MemoryService:
         agent_id: Optional[str] = None,
         type: Optional[str] = None,
         exclude_noise: bool = True,
+        ensure_complete: bool = False,
     ) -> list[tuple[Memory, float]]:
         """Return the ``limit`` memories most similar to ``embedding``.
 
@@ -235,6 +292,17 @@ class MemoryService:
         direction, 2.0 == opposite). Results are ordered nearest-first and each
         is returned alongside its raw cosine distance so callers can derive a
         similarity score. Memories without a stored embedding are excluded.
+
+        ``ensure_complete`` (phase4): the HNSW index scans a bounded candidate
+        set (``hnsw.ef_search``, default 40) *before* the ``user_id``/``type``
+        filters are applied, so on a selective filter it can return **fewer
+        than ``limit`` rows** and silently drop true near neighbours (measured:
+        ``limit=50`` returned 41, and an exact-rank-3 neighbour was missing).
+        When set and the first pass comes back short, retry with a boosted
+        ``hnsw.ef_search`` and, if still short, with index scan disabled for
+        that query (exact) — then restore the settings. Default off so existing
+        callers (e.g. stale-duplicate flagging) are byte-for-byte unchanged;
+        :meth:`hybrid_search` opts in via ``retrieval_pool_completeness_guard``.
         """
         distance = Memory.embedding.cosine_distance(embedding).label("distance")
 
@@ -251,7 +319,59 @@ class MemoryService:
         stmt = stmt.order_by(distance).limit(limit)
 
         result = await self.session.execute(stmt)
-        return [(memory, float(dist)) for memory, dist in result.all()]
+        rows = result.all()
+        if ensure_complete and limit and len(rows) < limit:
+            rows = await self._complete_vector_pool(stmt, rows, limit)
+        return [(memory, float(dist)) for memory, dist in rows]
+
+    async def _complete_vector_pool(self, stmt, rows: list, limit: int) -> list:
+        """Best-effort escalation when the ANN vector scan under-returns.
+
+        Ordered cheapest-first: bump ``hnsw.ef_search`` to the pgvector ceiling
+        (often enough — measured to recover the dropped neighbour), then, if
+        still short, disable index scan for this one query so the planner does
+        an exact scan. GUCs are set transaction-locally and restored afterwards;
+        any failure falls back to the first-pass rows rather than erroring the
+        search.
+        """
+        try:
+            previous_ef = await self.session.scalar(
+                text("select current_setting('hnsw.ef_search')")
+            )
+        except Exception:
+            previous_ef = None
+        try:
+            if core_settings.retrieval_pool_guard_ef_search_boost:
+                await self.session.execute(
+                    text("select set_config('hnsw.ef_search', :v, true)"),
+                    {"v": "1000"},
+                )
+                rows = (await self.session.execute(stmt)).all()
+                if len(rows) >= limit:
+                    return rows
+            await self.session.execute(
+                text("select set_config('enable_indexscan', 'off', true)")
+            )
+            try:
+                rows = (await self.session.execute(stmt)).all()
+            finally:
+                await self.session.execute(
+                    text("select set_config('enable_indexscan', 'on', true)")
+                )
+        except Exception:
+            logger.exception(
+                "vector pool completeness guard failed — keeping first-pass ANN result"
+            )
+        finally:
+            if previous_ef is not None:
+                try:
+                    await self.session.execute(
+                        text("select set_config('hnsw.ef_search', :v, true)"),
+                        {"v": previous_ef},
+                    )
+                except Exception:
+                    logger.exception("failed to restore hnsw.ef_search")
+        return rows
 
     async def keyword_search_bm25(
         self,
@@ -269,40 +389,71 @@ class MemoryService:
         mixed zh/en content. Returns memories ordered by descending rank
         alongside their raw rank score. Empty/unmatched queries return ``[]``
         rather than falling back to a full scan.
+
+        Two tiers (phase3 fix):
+
+        1. **AND** — ``plainto_tsquery`` over the capped token string. Precise,
+           and the only tier used in the normal case.
+        2. **OR fallback** — only if tier 1 returns zero rows. A long query
+           (chat message + pasted context/injection block) ANDs dozens of
+           tokens together, so almost no row satisfies *all* of them and the
+           BM25 branch went silently empty, degrading hybrid_search to
+           pure-vector. Tier 2 ORs the same tokens, still under the same
+           ``status='active'`` / ``exclude_noise`` filters and the same
+           ``ORDER BY ts_rank_cd DESC`` — so recall comes back and relevance
+           ordering is still carried by the rank, not by OR hitting more rows.
+           When both tiers match, AND wins (higher precision, no dilution).
+
+        The OR tsquery is built as a chain of ``plainto_tsquery('simple', tok)
+        || ...`` rather than by joining tokens into a ``to_tsquery`` string:
+        ``plainto_tsquery`` treats its whole input as plain text (no operator
+        syntax to escape), so a jieba token containing ``&``/``|``/``!``/``:``
+        can't be misread as an operator, and no hand-rolled escaping is needed.
+        The chain depth equals the token count, which
+        ``BM25_MAX_OR_QUERY_TOKENS`` bounds.
         """
-        tokens = tokenize_for_fts(query)
-        if not tokens:
+        token_list = bm25_query_tokens(query, BM25_MAX_QUERY_TOKENS)
+        if not token_list:
             return []
 
-        # Cap token count so the AND-tree can't exceed Postgres' stack depth
-        # (see BM25_MAX_QUERY_TOKENS). Keep the leading tokens: they carry the
-        # actual search intent, trailing ones are usually pasted context/log.
-        tokens = " ".join(tokens.split()[:BM25_MAX_QUERY_TOKENS])
+        def _build_stmt(tsquery_expr):
+            # 用触发器维护的 search_tsv 列,而不是现算 to_tsvector(search_text):
+            # 后者让 PG 为每个命中行重解析全文,ORDER BY rank 更逼它全算一遍
+            # (实测 507ms → 11.8ms,43x)。列由 trg_memories_search_tsv 保证同步。
+            rank = func.ts_rank_cd(Memory.search_tsv, tsquery_expr).label("rank")
+            stmt = select(Memory, rank).where(
+                Memory.search_tsv.op("@@")(tsquery_expr), Memory.status == "active"
+            )
+            if user_id:
+                stmt = stmt.where(Memory.user_id == user_id)
+            if agent_id:
+                stmt = stmt.where(Memory.agent_id == agent_id)
+            if type:
+                stmt = stmt.where(Memory.type == type)
+            stmt = self._apply_noise_filter(stmt, type, exclude_noise)
+            return stmt.order_by(rank.desc()).limit(limit)
 
-        # plainto_tsquery (not websearch_to_tsquery): tokens are already
-        # segmented by us, and plainto_tsquery has no special operator syntax
-        # (quotes/OR/-) to misinterpret if a jieba token happens to start
+        # Tier 1: AND. plainto_tsquery (not websearch_to_tsquery): tokens are
+        # already segmented by us, and plainto_tsquery has no special operator
+        # syntax (quotes/OR/-) to misinterpret if a jieba token happens to start
         # with a character like '-'. It just ANDs every token together.
-        # 用触发器维护的 search_tsv 列,而不是现算 to_tsvector(search_text):
-        # 后者让 PG 为每个命中行重解析全文,ORDER BY rank 更逼它全算一遍
-        # (实测 507ms → 11.8ms,43x)。列由 trg_memories_search_tsv 保证同步。
-        tsvector_expr = Memory.search_tsv
-        tsquery_expr = func.plainto_tsquery("simple", tokens)
-        rank = func.ts_rank_cd(tsvector_expr, tsquery_expr).label("rank")
+        and_query = func.plainto_tsquery("simple", " ".join(token_list))
+        result = await self.session.execute(_build_stmt(and_query))
+        rows = result.all()
+        if rows:
+            return [(memory, float(r)) for memory, r in rows]
 
-        stmt = select(Memory, rank).where(
-            tsvector_expr.op("@@")(tsquery_expr), Memory.status == "active"
+        # Tier 2: OR fallback. A single token makes OR identical to AND (already
+        # known empty), and more OR terms than the depth cap would only add
+        # noise, so bail out instead of re-running.
+        or_tokens = token_list[:BM25_MAX_OR_QUERY_TOKENS]
+        if len(or_tokens) < 2:
+            return []
+        or_query = reduce(
+            lambda left, right: left.op("||")(right),
+            (func.plainto_tsquery("simple", token) for token in or_tokens),
         )
-        if user_id:
-            stmt = stmt.where(Memory.user_id == user_id)
-        if agent_id:
-            stmt = stmt.where(Memory.agent_id == agent_id)
-        if type:
-            stmt = stmt.where(Memory.type == type)
-        stmt = self._apply_noise_filter(stmt, type, exclude_noise)
-        stmt = stmt.order_by(rank.desc()).limit(limit)
-
-        result = await self.session.execute(stmt)
+        result = await self.session.execute(_build_stmt(or_query))
         return [(memory, float(r)) for memory, r in result.all()]
 
     async def hybrid_search(
@@ -351,19 +502,60 @@ class MemoryService:
             except Exception:
                 logger.exception("embed_text failed for hybrid_search query — falling back to BM25-only")
 
+        # 阶段5(2026-09-29): 单用户系统下可放宽 user_id 过滤 ——
+        # 实测同一用户（微信 sessionID / system 名下）的 6/17 条期望记忆被它挡在检索外。
+        scope_user_id = None if core_settings.retrieval_user_scope == "all" else user_id
         if query:
             bm25_results = await self.keyword_search_bm25(
-                query, limit=candidate_pool, user_id=user_id, agent_id=agent_id, type=type
+                query, limit=candidate_pool, user_id=scope_user_id, agent_id=agent_id, type=type
             )
         if embedding:
             vector_results = await self.semantic_search(
-                embedding, limit=candidate_pool, user_id=user_id, agent_id=agent_id, type=type
+                embedding,
+                limit=candidate_pool,
+                user_id=scope_user_id,
+                agent_id=agent_id,
+                type=type,
+                ensure_complete=core_settings.retrieval_pool_completeness_guard,
             )
 
-        fused = reciprocal_rank_fusion(bm25_results, vector_results)
-        for item in fused:
-            item["memory"] = item.pop("row")
-        self._apply_recency_source_weighting(fused)
+        # 阶段5(2026-09-29): 融合模式。实测纯向量序(0.727)优于 RRF+乘性加权(0.545),
+        # 故提供 vector_dominant —— 向量余弦为主序,BM25 只补候选,乘性加权不参与主排序。
+        if core_settings.retrieval_fusion_mode == "vector_dominant":
+            fused = []
+            _seen = set()
+            for rank, (row, distance) in enumerate(vector_results, start=1):
+                fused.append(
+                    {"row": row, "vector_rank": rank, "vector_distance": distance, "rrf_score": 0.0}
+                )
+                _seen.add(row.id)
+            for rank, (row, score) in enumerate(bm25_results, start=1):
+                if row.id in _seen:
+                    continue
+                fused.append(
+                    {"row": row, "bm25_rank": rank, "bm25_score": score, "rrf_score": 0.0}
+                )
+            for item in fused:
+                item["memory"] = item.pop("row")
+        else:
+            fused = reciprocal_rank_fusion(bm25_results, vector_results)
+            for item in fused:
+                item["memory"] = item.pop("row")
+            self._apply_recency_source_weighting(fused)
+
+        # phase4: fold near-duplicate clusters (by stored-embedding cosine) out
+        # of the ranked list, then MMR-backfill if folding left us short of
+        # ``limit``. Content-driven only — no id/source allow-lists. Runs after
+        # recency/source weighting so "best" means the final composite score,
+        # and before the truncation/rerank below so the freed slots are real.
+        fused = apply_folding_and_diversity(
+            fused,
+            limit=limit,
+            enabled=core_settings.retrieval_dedup_enabled,
+            threshold=core_settings.retrieval_duplicate_similarity_threshold,
+            diversity_enabled=core_settings.retrieval_diversity_enabled,
+            mmr_lambda=core_settings.retrieval_mmr_lambda,
+        )
         do_rerank = rerank and RERANK_ENABLED
         top = fused[: max(limit, candidate_pool) if do_rerank else limit]
 

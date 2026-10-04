@@ -20,7 +20,13 @@ import re
 
 import jieba
 
-__all__ = ["tokenize_for_fts", "build_search_text", "BM25_MAX_QUERY_TOKENS"]
+__all__ = [
+    "tokenize_for_fts",
+    "build_search_text",
+    "bm25_query_tokens",
+    "BM25_MAX_QUERY_TOKENS",
+    "BM25_MAX_OR_QUERY_TOKENS",
+]
 
 # BM25 query width cap (used by MemoryService/DocumentService keyword search).
 # ``plainto_tsquery`` ANDs every token together, so a very long query (e.g. a
@@ -32,6 +38,16 @@ __all__ = ["tokenize_for_fts", "build_search_text", "BM25_MAX_QUERY_TOKENS"]
 # capping is strictly better for recall too.
 BM25_MAX_QUERY_TOKENS = 128
 
+# Width cap for the OR fallback tier (see ``keyword_search_bm25``). The AND
+# tier runs ``plainto_tsquery`` on up to BM25_MAX_QUERY_TOKENS tokens, i.e. a
+# left-deep AND tree of depth ~128 — that is already proven to run (see above).
+# The OR tier is built as a chain of ``tsquery || tsquery`` (one per token), so
+# its depth equals the token count too; keeping it at half the AND cap bounds
+# the executor recursion well under Postgres' ``max_stack_depth`` while still
+# covering a full pasted-paragraph query. OR only ever runs when AND matched
+# zero rows, so a smaller cap costs nothing in the common case.
+BM25_MAX_OR_QUERY_TOKENS = 64
+
 _HAS_WORDCHAR_RE = re.compile(r"\w", re.UNICODE)
 
 
@@ -42,6 +58,20 @@ def tokenize_for_fts(text: str) -> str:
     tokens = [t.strip() for t in jieba.cut_for_search(text)]
     tokens = [t for t in tokens if _HAS_WORDCHAR_RE.search(t)]
     return " ".join(tokens)
+
+
+def bm25_query_tokens(query: str, max_tokens: int = BM25_MAX_QUERY_TOKENS) -> list[str]:
+    """Tokenize a search query the same way ``search_text`` was built.
+
+    Returns the capped token list (leading tokens win — they carry the actual
+    search intent, trailing ones are usually pasted context/log). Shared by the
+    AND and OR tiers of :meth:`MemoryService.keyword_search_bm25` so both sides
+    of ``@@`` line up for mixed zh/en content.
+    """
+    if not query:
+        return []
+    tokens = tokenize_for_fts(query).split()
+    return tokens[:max_tokens]
 
 
 def build_search_text(content: str | None, summary: str | None, tags: list | None) -> str:

@@ -406,6 +406,20 @@ class CoreSettings(BaseSettings):
     # into the decay-target anchor (not applied to current state directly).
     emotion_dream_baseline_weight: float = Field(default=0.3, ge=0.0, le=1.0)
 
+    # --- 写入侧预防（2026-09-29，见 gateway/core/write_guard.py）----------
+    # 库里重复的来源是写入而非检索；这是入库前的拦截，默认关闭。
+    store_dedupe_mode: str = Field(
+        default="off",
+        description="入库前精确查重（HCC_STORE_DEDUPE_MODE）：off(默认) | skip。"
+        "skip = 窗口内已有逐字同文的 active 记忆时跳过插入，直接返回既有那条。"
+        "不按 agent 分域——实测的重复恰是跨 agent 的同一段原文。",
+    )
+    store_dedupe_window_hours: int = Field(
+        default=48,
+        description="精确查重的回看窗口小时数（HCC_STORE_DEDUPE_WINDOW_HOURS）。"
+        "限定窗口是为了让每次写入的查重查询有界；更老的重复交给 nightly 清扫。",
+    )
+
     # --- Local noise filter (docs/local-noise-filter.md) ----------------
     # Async, event-driven review of low-trust memory writes (type=tool_result
     # or source=openclaw_plugin) via a local Ollama model — never blocks
@@ -498,19 +512,40 @@ class CoreSettings(BaseSettings):
     # memory is and where it came from.
     retrieval_importance_exponent: float = Field(
         default=0.5, ge=0.0, le=3.0,
-        description="检索重排里 importance 的指数(HCC_RETRIEVAL_IMPORTANCE_EXPONENT)。"
-        "rrf_score 乘以 importance**exponent;0 = 关闭(老行为)。\n"
+        description="检索重排里 importance 的强度(HCC_RETRIEVAL_IMPORTANCE_EXPONENT)。"
+        "phase3 起不再乘到 rrf_score 上,而是**只在近似平局区内**做 tie-break:"
+        "平局区由 retrieval_importance_tiebreak_band 划定,区内按 importance 降序重排,"
+        "区外主序完全不受影响。0 = 关闭(importance 完全不参与检索排序)。\n"
         "2026-09-05 加的,起因很直白:一条 importance 0.95 的策展知识"
         "(跨运行时变更总账)在真实查询里**排第 6**,压在它上面的是五条 "
         "importance 0.4、还带 stale 标签的 harvester 对话碎片。"
         "排序此前只看 recency + source,importance 完全不参与 —— "
         "于是「这条重要」这件事对检索毫无影响,策展知识被闲聊淹没。\n"
-        "和 recency 一样是**乘性**的:主排序仍由 BM25+向量的话题相关度决定,"
-        "importance 只在近似平局时把该浮的顶上来。指数而非线性是为了让强度可调 —— "
-        "0.5 是实测校准出来的:在 6 条真实查询上比过 0/0.5/1.0 —— "
-        "0.5 把「变更总账」和「soul 设计」这两条从被噪音淹没救回第 1,"
-        "而身份锚点/回忆录/联络链/承诺这四条本来就正确的**一位没动**;"
-        "1.0 则开始让 importance 盖过话题相关度(查「永久承诺」时把紧急联络链顶到第 2)。",
+        "2026-09-28(phase3)修正:原来的**乘性**施加是错的 —— "
+        "0.95^0.5 vs 0.4^0.5 差 5.6 倍,在 RRF 近似平局区里直接压过话题相关度,"
+        "实测会把「查永久承诺」的紧急联络链顶到第 2。现降为 tie-break,"
+        "主序仍由 BM25+向量的话题相关度决定。指数保留只为沿用那个 0.5 的调参语义。",
+    )
+    retrieval_importance_tiebreak_band: float = Field(
+        default=0.05, ge=0.0, le=1.0,
+        description="importance tie-break 的平局区宽度(HCC_RETRIEVAL_IMPORTANCE_TIEBREAK_BAND)。"
+        "两条候选的 rrf_score 相对差 < 该值即视为平局,区内按 importance 降序重排;"
+        "0 = 关闭 tie-break(等同只按 rrf_score)。默认 0.05,即相对差 5%。",
+    )
+    retrieval_fusion_mode: str = Field(
+        default="rrf",
+        description="检索融合模式(HCC_RETRIEVAL_FUSION_MODE)。\n"
+        '"rrf"(默认)= BM25+向量 RRF 融合 + 乘性加权(现状);'
+        '"vector_dominant"= 以**向量余弦序**为主序,BM25 仅作候选补充,乘性加权不参与主排序。\n'
+        "2026-09-29 实测(可达子集 11 条 query 的 recall@5):纯向量 0.727 > RRF+加权 0.545 > "
+        "再叠 rerank 0.273 —— 即现有后处理在把纯向量的好排序搞坏。",
+    )
+    retrieval_user_scope: str = Field(
+        default="strict",
+        description="user_id 过滤口径(HCC_RETRIEVAL_USER_SCOPE)。\n"
+        '"strict"(默认)= 按传入 user_id 过滤(现状);"all"= 不加 user_id 过滤。\n'
+        "本系统是**单用户**;user_id 里混着微信路径 sessionID 与 system,"
+        "实测把同一用户的 6/17 条期望记忆挡在检索外。放宽仅用于单用户部署。",
     )
     retrieval_recency_weighting_enabled: bool = Field(
         default=True,
@@ -528,6 +563,48 @@ class CoreSettings(BaseSettings):
         description="Per-Memory.source multiplier applied to rrf_score alongside "
         "recency decay (HCC_RETRIEVAL_SOURCE_WEIGHTS as JSON, e.g. "
         '\'{"openclaw_sync": 0.5}\'). Sources not listed default to 1.0 (no change).',
+    )
+
+    # --- Retrieval near-duplicate folding + diversity (phase4, 2026-09-28) --
+    # 可达子集内 hybrid(0.545) 低于纯向量(0.727):RRF 只看名次,且 top-k 常被
+    # 「同源近重复」(同一段对话被多个运行时/harvester 反复写入,向量几乎相同)
+    # 整段占满 —— 5 个名额里 3~4 个是同一条内容的副本,真正的话题记忆排不上来。
+    # 这一层在 RRF 融合 + recency/source 加权之后、最终截断之前,按**内容余弦**
+    # (复用已存的 embedding,不额外调模型)把近重复折叠成一簇,只保留综合分最高
+    # 的代表;被折叠的记入代表的 ``duplicates`` 字段(可观测、不丢弃)。折叠是
+    # **内容驱动**的,不按 id / source 白名单硬编码。
+    retrieval_dedup_enabled: bool = Field(
+        default=True,
+        description="近重复折叠总开关(HCC_RETRIEVAL_DEDUP_ENABLED)。关掉即为老行为。",
+    )
+    retrieval_duplicate_similarity_threshold: float = Field(
+        default=0.95, ge=0.0, le=1.0,
+        description="内容余弦 ≥ 该值即视为同一簇(HCC_RETRIEVAL_DUPLICATE_SIMILARITY_THRESHOLD)。"
+        "默认 0.95:同源重复几乎完全共线(常 >0.99),而语义相近但不同的记忆通常 <0.93。"
+        "设为 0(或把 retrieval_dedup_enabled 关掉)即关闭折叠。",
+    )
+    retrieval_diversity_enabled: bool = Field(
+        default=True,
+        description="折叠后仍不足 limit 时,用 MMR 在剩余候选里按相关度-新颖度权衡补齐"
+        "(HCC_RETRIEVAL_DIVERSITY_ENABLED),避免同簇连续占位。",
+    )
+    retrieval_mmr_lambda: float = Field(
+        default=0.7, ge=0.0, le=1.0,
+        description="MMR 的 λ(HCC_RETRIEVAL_MMR_LAMBDA):λ*相关度 − (1−λ)*与已选的最大相似度。"
+        "λ=1 等价于纯按分数;λ=0 只按新颖度。默认 0.7 偏相关度。",
+    )
+    retrieval_pool_completeness_guard: bool = Field(
+        default=True,
+        description="候选池完整性守卫(HCC_RETRIEVAL_POOL_COMPLETENESS_GUARD)。"
+        "pgvector 的 HNSW 索引先按 ef_search 取全局近邻、**再**施加 user_id 等过滤,"
+        "过滤尖时会**少返回**(实测 limit=50 只回 40~41 条,且精确名次第 3 的真实近邻"
+        "被整条丢掉)—— 这就是「候选池截断」。打开后:一旦向量分支返回数 < 请求数,"
+        "就对该查询改用精确扫描兜底(临时关索引扫描,查完还原),保证池子不缺。",
+    )
+    retrieval_pool_guard_ef_search_boost: bool = Field(
+        default=True,
+        description="池子守卫的首选轻量手段(HCC_RETRIEVAL_POOL_GUARD_EF_SEARCH_BOOST):"
+        "先把 hnsw.ef_search 临时顶到上限再查(往往就够);仍不足才退回关索引的精确扫描。",
     )
 
     def ttl_for(self, category: str) -> int:
