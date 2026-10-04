@@ -19,7 +19,7 @@ migrate,如实反映这一点。
   中途 Ctrl-C 或崩溃后重新运行会从剩余的行继续,不会重复计费/重复请求 ollama。
 - 分批提交(默认 50 行一批),不是单个大事务——避免一次性长事务锁表/OOM,
   单批失败只回滚这一批,已提交的批次不受影响。
-- 只算向量、只 UPDATE embedding 列,不改 content/tags/status 等其它字段。
+- 只算向量、只写 ``embedding`` + ``embedding_model`` 两列,不改 content/tags/status 等其它字段。
 - 运行前建议先跑一次 ``scripts/backup_hcc.sh``(或等效 pg_dump)——本脚本不会
   自动备份,是纯粹的只写 embedding 列的操作,但"建议先备份"是体检报告明确
   要求的,交给运维习惯而不是脚本硬编码一次性备份逻辑。
@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import select
 
 from gateway.core.database import async_session
-from gateway.core.embeddings import EMBEDDING_PROVIDER, embed_text
+from gateway.core.embeddings import EMBEDDING_MODEL, EMBEDDING_PROVIDER, embed_text
 from gateway.models import Document, Memory
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -61,6 +61,10 @@ async def _embed_row(row, text_of, semaphore: asyncio.Semaphore) -> tuple[object
     async with semaphore:
         try:
             row.embedding = await asyncio.to_thread(embed_text, text)
+            # 2026-09-29: 必须同时写 embedding_model —— 只写向量不写户口会在
+            # vector_guard 里被标成 mixed_provenance（2026-09-28 回填 159 行时漏写，
+            # 重启后 /health 直接 degraded）。向量空间的身份和维度一样，不能省。
+            row.embedding_model = EMBEDDING_MODEL
             return row, None
         except Exception as exc:
             return row, exc
