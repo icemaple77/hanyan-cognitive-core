@@ -413,6 +413,18 @@ def summarize_knowledge(limit: int, stats: dict) -> None:
             stats["knowledge_failed"] += 1
 
 
+MAX_DAY_ATTEMPTS = 2
+
+
+def _needs_run(entry: dict | None) -> bool:
+    """这一天还要不要跑:没跑过要跑;跑完整了不跑;有缺块的最多再试到 MAX_DAY_ATTEMPTS 次。"""
+    if not entry:
+        return True
+    if entry.get("status") == "ok":
+        return False
+    return int(entry.get("attempts", 1)) < MAX_DAY_ATTEMPTS
+
+
 def _load_state() -> dict:
     try:
         return json.loads(STATE_PATH.read_text())
@@ -488,11 +500,13 @@ def main() -> int:
         today = dt.datetime.now().astimezone().strftime("%Y-%m-%d")
         y = (dt.datetime.now().astimezone() - dt.timedelta(days=1)).strftime("%Y-%m-%d")
         # 昨天 + 最近 N 个还没摘要过的更早的日子(从近到远)
-        older = [k for k in sorted(by_day, reverse=True) if k < y and state.get(k, {}).get("status") != "ok"]
+        # 有缺块的日子最多重试 MAX_DAY_ATTEMPTS 次:有的块模型就是给不出 JSON,
+        # 一直重试会每天早上卡在同两天上,更早的历史永远轮不到(2026-10-05:9-30 连续三次都缺块)
+        older = [k for k in sorted(by_day, reverse=True) if k < y and _needs_run(state.get(k))]
         keep = {y, *older[: max(0, a.backfill_days)]}
         by_day = {k: v for k, v in by_day.items() if k in keep and k < today}
     if a.write and not a.force:
-        by_day = {k: v for k, v in by_day.items() if state.get(k, {}).get("status") != "ok"}
+        by_day = {k: v for k, v in by_day.items() if _needs_run(state.get(k))}
 
     stats = {"days": len(by_day), "fragments": len(frags), "chunks": 0, "chunk_failed": 0,
              "episodes": 0, "preferences": 0, "facts": 0, "umbrella": "n/a"}
@@ -515,7 +529,8 @@ def main() -> int:
                         # 每天跑完立刻写库并记状态:长跑中途被打断,已完成的日子不白跑
                         write_items(items, stats)
                         state[date] = {"at": dt.datetime.now().isoformat(),
-                                       "status": "partial" if stats["chunk_failed"] > failed_before else "ok"}
+                                       "status": "partial" if stats["chunk_failed"] > failed_before else "ok",
+                                       "attempts": int((state.get(date) or {}).get("attempts", 0)) + 1}
                         _save_state(state)
 
     # 一眼能看出"今天到底跑没跑":not-run(没拿到 umbrella)/ partial(有块丢了)/ ok / nothing-to-do
